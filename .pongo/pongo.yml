@@ -1,0 +1,8 @@
+kong_version: "3.9.1"
+
+plugins:
+  - name: oauth-client-context
+    path: kong/plugins/oauth-client-context
+
+env:
+  KONG_PLUGINS: bundled,oauth-client-context

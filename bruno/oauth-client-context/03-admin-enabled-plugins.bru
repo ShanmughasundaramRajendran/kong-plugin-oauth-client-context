@@ -1,0 +1,15 @@
+meta {
+  name: Admin Enabled Plugins
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{admin_url}}/plugins/enabled
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+}
