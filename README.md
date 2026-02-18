@@ -15,7 +15,7 @@ This POC supports both signing algorithms required by the customer:
 
 ## Configuration
 - `key_id` (required): JWT `kid` header value.
-- `private_key` (required): PEM private key matching `algorithm`.
+- `private_key` (required): PEM private key matching `algorithm`, or Kong Vault reference.
 - `subject` (optional): JWT `sub` claim. Defaults to consumer `client_id` when available.
 - `issuer` (optional): JWT `iss` claim. Defaults to incoming request host.
 - `audience` (optional): JWT `aud` claim. Defaults to incoming request host.
@@ -23,11 +23,37 @@ This POC supports both signing algorithms required by the customer:
 - `header_name` (optional): defaults to `x-client-auth-ctx`.
 - `ttl` (optional): defaults to `60`, valid range `1..86400`.
 
+## Signing Key Resolution
+- The plugin resolves signing key using `key_id` and `algorithm`.
+- `private_key` can use Kong Vault syntax (example: `{vault://env/LOCAL_TEST_RS_PRIVATE_KEY}`).
+- Kong resolves the vault reference before plugin execution.
+- Parsed signing keys are cached in-plugin by `algorithm:key_id` for 10 minutes (`600` seconds).
+
+## Claims Added To JWT
+For both `RS256` and `ES256`, the plugin includes these attributes in JWT claims. Source priority is:
+1. Incoming request headers
+2. Authenticated consumer tags (`claim:<name>=<value>`)
+
+Supported claims:
+- `client_id`
+- `app_id`
+- `grant_type`
+- `oauth_resource_owner_id`
+- `consent_id`
+- `ssoid`
+- `scopes`
+- `x-apigw-origin-client-id`
+- `auth_identity_type`
+- `oauth_identity_type`
+- `approved_operation_types`
+
+Note: Kong tags do not allow literal commas, so use URL-encoded values in tags when needed (example: `query%2Cmutation`).
+
 ## Local Dev (Docker Compose)
 ```bash
 make build
 make up
-make test        # runs /test-rs and /test-es smoke checks
+make test        # runs all smoke checks + dynamic-claim assertions
 make down
 ```
 
@@ -73,9 +99,19 @@ rg -n "algorithm: RS256|algorithm: ES256" config/kong.yml
 Pass criteria: both lines are present in `config/kong.yml`.
 
 ## Declarative Demo Config
-`config/kong.yml` includes two route-level plugin examples:
-- `/test-rs` using `RS256`
-- `/test-es` using `ES256`
+`config/kong.yml` includes 3 consumers and 3 services with 6 routes:
+- Consumers:
+  - `demo-consumer-app` (`demo-consumer-apikey`)
+  - `demo-consumer-app-2` (`demo-consumer-apikey-2`)
+  - `demo-consumer-app-3` (`demo-consumer-apikey-3`)
+- Routes:
+  - `/test-rs` (`RS256`) and `/test-es` (`ES256`)
+  - `/billing/rs` (`RS256`) and `/billing/es` (`ES256`)
+  - `/orders/rs` (`RS256`) and `/orders/es` (`ES256`)
+- All routes have `key-auth` enabled (`apikey` header).
+- Claims are resolved dynamically per authenticated consumer from that consumer's `claim:*` tags.
+- All route plugin configs use Kong Vault `env` references for signing keys by `key_id`.
+- Docker compose enables Kong Vault provider with `KONG_VAULTS=env`.
 
 ## Mac Terminal Runbook (Consolidated Commands)
 ```bash
@@ -112,7 +148,13 @@ make down
 ## Bruno Collection
 - Import folder: `bruno/oauth-client-context`
 - Environment file: `bruno/oauth-client-context/environments/local.bru`
+- Collection name: `oauth-client-context-v5`
 - Included requests:
-  - `RS256 Smoke` (`GET {{base_url}}/test-rs`)
-  - `ES256 Smoke` (`GET {{base_url}}/test-es`)
+  - `RS256 C1 V5` (`GET {{base_url}}/test-rs`, `apikey_c1`)
+  - `ES256 C1 V5` (`GET {{base_url}}/test-es`, `apikey_c1`)
+  - `Billing RS256 C2 V5` (`GET {{base_url}}/billing/rs`, `apikey_c2`)
+  - `Billing ES256 C2 V5` (`GET {{base_url}}/billing/es`, `apikey_c2`)
+  - `Orders RS256 C3 V5` (`GET {{base_url}}/orders/rs`, `apikey_c3`)
+  - `Orders ES256 C3 V5` (`GET {{base_url}}/orders/es`, `apikey_c3`)
   - `Admin Enabled Plugins` (`GET {{admin_url}}/plugins/enabled`)
+- All route requests send only `apikey`; JWT claims are read dynamically from the matched consumer tags.

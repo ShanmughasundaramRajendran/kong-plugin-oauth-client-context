@@ -1,16 +1,16 @@
 meta {
-  name: RS256 C1 V5
+  name: Billing RS256 C2 V5
   type: http
-  seq: 1
+  seq: 3
 }
 
 get {
-  url: {{base_url}}/test-rs
+  url: {{base_url}}/billing/rs
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  apikey: {{apikey_c1}}
+  apikey: {{apikey_c2}}
 }

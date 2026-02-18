@@ -98,22 +98,55 @@ validate-config:
 # Testing
 # ============================================================
 
-## test: Run both proxy smoke tests (RS256 + ES256)
-test: test-rs256 test-es256
+## test: Run smoke tests for all configured routes and consumer claim resolution
+test: test-rs256 test-es256 test-billing-rs256 test-billing-es256 test-orders-rs256 test-orders-es256 test-dynamic-claims
 
 ## test-rs256: Test RS256 route and inspect injected header
 test-rs256:
-	@curl -s http://localhost:8000/test-rs | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@curl -s -H "apikey: demo-consumer-apikey" http://localhost:8000/test-rs | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
 	@echo "RS256 smoke test passed"
 
 ## test-es256: Test ES256 route and inspect injected header
 test-es256:
-	@curl -s http://localhost:8000/test-es | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@curl -s -H "apikey: demo-consumer-apikey" http://localhost:8000/test-es | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
 	@echo "ES256 smoke test passed"
+
+## test-billing-rs256: Test billing RS256 route with consumer 2
+test-billing-rs256:
+	@curl -s -H "apikey: demo-consumer-apikey-2" http://localhost:8000/billing/rs | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@echo "Billing RS256 smoke test passed"
+
+## test-billing-es256: Test billing ES256 route with consumer 2
+test-billing-es256:
+	@curl -s -H "apikey: demo-consumer-apikey-2" http://localhost:8000/billing/es | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@echo "Billing ES256 smoke test passed"
+
+## test-orders-rs256: Test orders RS256 route with consumer 3
+test-orders-rs256:
+	@curl -s -H "apikey: demo-consumer-apikey-3" http://localhost:8000/orders/rs | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@echo "Orders RS256 smoke test passed"
+
+## test-orders-es256: Test orders ES256 route with consumer 3
+test-orders-es256:
+	@curl -s -H "apikey: demo-consumer-apikey-3" http://localhost:8000/orders/es | jq -re '.headers["X-Client-Auth-Ctx"] | select(type=="string" and test("^[^.]+\\.[^.]+\\.[^.]+$$"))' >/dev/null
+	@echo "Orders ES256 smoke test passed"
+
+## test-dynamic-claims: Validate claims are dynamically resolved from each authenticated consumer
+test-dynamic-claims:
+	@token=$$(curl -s -H "apikey: demo-consumer-apikey" http://localhost:8000/test-rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
+	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
+	echo "$$payload" | jq -e '.client_id == "consumer-client-001" and .app_id == "consumer-app-001" and .approved_operation_types == "query,mutation"' >/dev/null
+	@token=$$(curl -s -H "apikey: demo-consumer-apikey-2" http://localhost:8000/billing/rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
+	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
+	echo "$$payload" | jq -e '.client_id == "consumer-client-002" and .app_id == "consumer-app-002" and .approved_operation_types == "query,subscription"' >/dev/null
+	@token=$$(curl -s -H "apikey: demo-consumer-apikey-3" http://localhost:8000/orders/es | jq -r '.headers["X-Client-Auth-Ctx"]'); \
+	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
+	echo "$$payload" | jq -e '.client_id == "consumer-client-003" and .app_id == "consumer-app-003" and .approved_operation_types == "mutation,query"' >/dev/null
+	@echo "Dynamic consumer claim resolution test passed"
 
 ## test-proxy: Backward-compatible alias to RS256 route
 test-proxy:
-	@curl -i http://localhost:8000/test-rs
+	@curl -i -H "apikey: demo-consumer-apikey" http://localhost:8000/test-rs
 
 ## test-admin: Test admin API
 test-admin:
