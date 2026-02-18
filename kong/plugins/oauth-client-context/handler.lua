@@ -2,12 +2,115 @@ local cjson = require "cjson.safe"
 local lrucache = require "resty.lrucache"
 local pkey = require "resty.openssl.pkey"
 
-local cache = lrucache.new(100)
+local parsed_key_cache = lrucache.new(100)
+local KEY_CACHE_TTL_SECONDS = 600
 
 local OAuthClientContext = {
   PRIORITY = 900,
   VERSION = "2.0.0",
 }
+
+local CLAIM_HEADERS = {
+  { claim = "client_id", headers = { "client_id" } },
+  { claim = "app_id", headers = { "app_id" } },
+  { claim = "grant_type", headers = { "grant_type" } },
+  { claim = "oauth_resource_owner_id", headers = { "oauth_resource_owner_id" } },
+  { claim = "consent_id", headers = { "consent_id" } },
+  { claim = "ssoid", headers = { "ssoid" } },
+  { claim = "scopes", headers = { "scopes" } },
+  { claim = "x-apigw-origin-client-id", headers = { "x-apigw-origin-client-id", "x_apigw_origin_client_id" } },
+  { claim = "auth_identity_type", headers = { "auth_identity_type", "oauth_identity_type" } },
+  { claim = "oauth_identity_type", headers = { "oauth_identity_type", "auth_identity_type" } },
+  { claim = "approved_operation_types", headers = { "approved_operation_types" } },
+}
+
+local function trim(s)
+  if type(s) ~= "string" then
+    return s
+  end
+
+  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function resolve_env_vault_reference(ref)
+  local secret_name = ref:match("^%{vault://env/([^}]+)%}$")
+  if not secret_name then
+    return nil
+  end
+
+  return os.getenv(secret_name)
+end
+
+local function resolve_private_key_value(private_key_ref)
+  local ref = trim(private_key_ref)
+  if not ref or ref == "" then
+    return nil, "private key is empty"
+  end
+
+  if not ref:match("^%{vault://") then
+    return ref, nil
+  end
+
+  if kong.vault and type(kong.vault.get) == "function" then
+    local ok, secret_or_err, maybe_err = pcall(kong.vault.get, ref)
+    if ok and type(secret_or_err) == "string" and secret_or_err ~= "" then
+      return secret_or_err, nil
+    end
+    if ok and maybe_err then
+      kong.log.err("[oauth-client-context] kong.vault.get failed for reference ", ref, ": ", maybe_err)
+    end
+    if not ok then
+      kong.log.err("[oauth-client-context] kong.vault.get error for reference ", ref, ": ", secret_or_err)
+    end
+  end
+
+  local env_secret = resolve_env_vault_reference(ref)
+  if env_secret and env_secret ~= "" then
+    return env_secret, nil
+  end
+
+  return nil, "failed to resolve vault reference " .. ref
+end
+
+local function get_signing_key(conf)
+  local cache_key = conf.algorithm .. ":" .. conf.key_id
+  local signing_key = parsed_key_cache:get(cache_key)
+  if signing_key then
+    return signing_key
+  end
+
+  -- `private_key` may be a Kong vault reference; Kong resolves it before plugin access.
+  local private_key, err = resolve_private_key_value(conf.private_key)
+  if not private_key then
+    return nil, err
+  end
+
+  signing_key, err = pkey.new(private_key)
+  if not signing_key then
+    return nil, err
+  end
+
+  parsed_key_cache:set(cache_key, signing_key, KEY_CACHE_TTL_SECONDS)
+  return signing_key
+end
+
+local function parse_consumer_claims(consumer)
+  local claims = {}
+  if not consumer or type(consumer.tags) ~= "table" then
+    return claims
+  end
+
+  for _, tag in ipairs(consumer.tags) do
+    if type(tag) == "string" then
+      local key, value = tag:match("^claim:([^=]+)=(.+)$")
+      if key and value and value ~= "" then
+        claims[key] = ngx.unescape_uri(value)
+      end
+    end
+  end
+
+  return claims
+end
 
 local function base64url_encode(input)
   local encoded = ngx.encode_base64(input)
@@ -54,14 +157,32 @@ local function build_payload(conf)
   local payload = {
     iat = ngx.time()
   }
+  local consumer = kong.client.get_consumer()
+  local consumer_claims = parse_consumer_claims(consumer)
+
+  for _, mapping in ipairs(CLAIM_HEADERS) do
+    for _, header_name in ipairs(mapping.headers) do
+      local value = kong.request.get_header(header_name)
+      if value ~= nil and value ~= "" then
+        payload[mapping.claim] = value
+        break
+      end
+    end
+
+    if payload[mapping.claim] == nil then
+      local consumer_value = consumer_claims[mapping.claim]
+      if consumer_value ~= nil and consumer_value ~= "" then
+        payload[mapping.claim] = consumer_value
+      end
+    end
+  end
 
   if conf.ttl then
     payload.exp = ngx.time() + conf.ttl
   end
 
-  local consumer = kong.client.get_consumer()
-  if consumer then
-    payload.client_id = consumer.id
+  if consumer and not payload.client_id then
+    payload.client_id = consumer_claims.client_id or consumer.custom_id or consumer.username or consumer.id
   end
 
   payload.sub = conf.subject or payload.client_id
@@ -77,20 +198,16 @@ function OAuthClientContext:access(conf)
     return
   end
 
-  local signing_key = cache:get(conf.private_key)
+  local signing_key, err = get_signing_key(conf)
   if not signing_key then
-    local err
-    signing_key, err = pkey.new(conf.private_key)
-    if not signing_key then
-      kong.log.err("[oauth-client-context] invalid private key: ", err)
-      return kong.response.exit(500, { message = "Invalid private key" })
-    end
-    cache:set(conf.private_key, signing_key)
+    kong.log.err("[oauth-client-context] invalid private key: ", err)
+    return kong.response.exit(500, { message = "Invalid private key" })
   end
 
   local payload = build_payload(conf)
 
-  local token, err = build_token(signing_key, conf, payload)
+  local token
+  token, err = build_token(signing_key, conf, payload)
 
   if not token then
     kong.log.err("[oauth-client-context] signing failed: ", err)

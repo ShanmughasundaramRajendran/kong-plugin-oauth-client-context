@@ -1,16 +1,16 @@
 meta {
-  name: RS256 C1 V5
+  name: Orders RS256 C3 V5
   type: http
-  seq: 1
+  seq: 5
 }
 
 get {
-  url: {{base_url}}/test-rs
+  url: {{base_url}}/orders/rs
   body: none
   auth: none
 }
 
 headers {
   Accept: application/json
-  apikey: {{apikey_c1}}
+  apikey: {{apikey_c3}}
 }

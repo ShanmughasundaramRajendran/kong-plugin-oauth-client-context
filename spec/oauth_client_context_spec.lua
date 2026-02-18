@@ -87,7 +87,20 @@ describe("oauth-client-context plugin", function()
   end)
 
   local function assert_token_exists(path)
-    local res = client:get(path)
+    local res = client:get(path, {
+      headers = {
+        client_id = "client-123",
+        app_id = "app-456",
+        grant_type = "client_credentials",
+        oauth_resource_owner_id = "owner-789",
+        consent_id = "consent-111",
+        ssoid = "ssoid-222",
+        scopes = "payments:read payments:write",
+        ["x-apigw-origin-client-id"] = "origin-333",
+        oauth_identity_type = "oauth2",
+        approved_operation_types = "query,mutation",
+      }
+    })
     assert.response(res).has.status(200)
 
     local body = assert.response(res).has.jsonbody()
@@ -173,6 +186,17 @@ describe("oauth-client-context plugin", function()
     assert.are.equal(expected_sub, payload.sub)
     assert.are.equal(expected_iss, payload.iss)
     assert.are.equal(expected_aud, payload.aud)
+    assert.are.equal("client-123", payload.client_id)
+    assert.are.equal("app-456", payload.app_id)
+    assert.are.equal("client_credentials", payload.grant_type)
+    assert.are.equal("owner-789", payload.oauth_resource_owner_id)
+    assert.are.equal("consent-111", payload.consent_id)
+    assert.are.equal("ssoid-222", payload.ssoid)
+    assert.are.equal("payments:read payments:write", payload.scopes)
+    assert.are.equal("origin-333", payload["x-apigw-origin-client-id"])
+    assert.are.equal("oauth2", payload.auth_identity_type)
+    assert.are.equal("oauth2", payload.oauth_identity_type)
+    assert.are.equal("query,mutation", payload.approved_operation_types)
   end
 
   it("injects x-client-auth-ctx header to upstream for RS256", function()
