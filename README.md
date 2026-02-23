@@ -75,6 +75,7 @@ make pongo-down
 ## Mocha Functional Suite
 Functional Mocha tests are available at:
 - `test/functional/mocha/oauth_client_context/oauth_ctx_test.js`
+- Includes signature validation checks for both `RS256` and `ES256` generated JWTs.
 
 Run locally (with Kong already running):
 ```bash

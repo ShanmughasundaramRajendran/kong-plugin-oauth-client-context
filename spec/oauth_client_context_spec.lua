@@ -93,6 +93,8 @@ describe("oauth-client-context plugin", function()
     end
 
     local function build_incoming_jwt()
+      -- We only need a decodable token shape for claim extraction tests.
+      -- Incoming token signature is intentionally not verified by the plugin.
       local header = cjson.encode({
         typ = "JWT",
         alg = "none",
@@ -118,6 +120,8 @@ describe("oauth-client-context plugin", function()
     local res = client:get(path, {
       headers = {
         Authorization = "Bearer " .. build_incoming_jwt(),
+        -- Legacy header value is sent intentionally to verify that
+        -- claims are sourced from incoming JWT first, not request headers.
         client_id = "legacy-header-should-not-be-used",
         ["x-consumer-extra-claim"] = "include-header-1",
         ["x-consumer-replace-claim"] = "replaced-by-header-2",
@@ -221,6 +225,10 @@ describe("oauth-client-context plugin", function()
     assert.are.equal("auth-from-incoming-token", payload.auth_identity_type)
     assert.are.equal("replaced-by-header-2", payload.oauth_identity_type)
     assert.are.equal("query,mutation", payload.approved_operation_types)
+    -- Consumer header scenarios:
+    -- include header 1 -> extra claim
+    -- replace header 2 -> override oauth_identity_type
+    -- ignore header 3 -> must not exist in payload
     assert.are.equal("include-header-1", payload.consumer_extra_claim)
     assert.is_nil(payload.consumer_ignore_claim)
   end
