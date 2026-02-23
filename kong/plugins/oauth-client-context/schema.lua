@@ -12,6 +12,7 @@ return {
           { enabled = { type = "boolean", default = true } },
           { key_id = { type = "string", required = true } },
           { private_key = { type = "string", required = true } },
+          { incoming_jwt_header = { type = "string", required = false, default = "authorization" } },
           { subject = { type = "string", required = false } },
           { issuer = { type = "string", required = false } },
           { audience = { type = "string", required = false } },

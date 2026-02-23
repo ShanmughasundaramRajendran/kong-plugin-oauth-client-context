@@ -16,6 +16,7 @@ This POC supports both signing algorithms required by the customer:
 ## Configuration
 - `key_id` (required): JWT `kid` header value.
 - `private_key` (required): PEM private key matching `algorithm`, or Kong Vault reference.
+- `incoming_jwt_header` (optional): header containing incoming JWT (default `authorization`).
 - `subject` (optional): JWT `sub` claim. Defaults to consumer `client_id` when available.
 - `issuer` (optional): JWT `iss` claim. Defaults to incoming request host.
 - `audience` (optional): JWT `aud` claim. Defaults to incoming request host.
@@ -28,11 +29,12 @@ This POC supports both signing algorithms required by the customer:
 - `private_key` can use Kong Vault syntax (example: `{vault://env/LOCAL_TEST_RS_PRIVATE_KEY}`).
 - Kong resolves the vault reference before plugin execution.
 - Parsed signing keys are cached in-plugin by `algorithm:key_id` for 10 minutes (`600` seconds).
+- Generated JWT header includes static `tv: 2`.
 
 ## Claims Added To JWT
 For both `RS256` and `ES256`, the plugin includes these attributes in JWT claims. Source priority is:
-1. Incoming request headers
-2. Authenticated consumer tags (`claim:<name>=<value>`)
+1. Incoming JWT token claims (decoded from `Authorization: Bearer <token>`)
+2. Authenticated consumer tags (`claim:<name>=<value>`) as fallback when incoming token claim is absent
 
 Supported claims:
 - `client_id`
@@ -57,12 +59,34 @@ make test        # runs all smoke checks + dynamic-claim assertions
 make down
 ```
 
+## Functional Header Scenarios
+The plugin supports three explicit consumer request headers:
+- `x-consumer-extra-claim`: included as `consumer_extra_claim` in generated JWT.
+- `x-consumer-replace-claim`: replaces outgoing JWT `oauth_identity_type`.
+- `x-consumer-ignore-claim`: intentionally ignored and not added to generated JWT.
+
 ## Pongo Test Workflow
 ```bash
 make pongo-up
 make pongo-test
 make pongo-down
 ```
+
+## Mocha Functional Suite
+Functional Mocha tests are available at:
+- `test/functional/mocha/oauth_client_context/oauth_ctx_test.js`
+
+Run locally (with Kong already running):
+```bash
+make npm-install
+make test-mocha
+```
+
+Environment overrides (optional):
+- `BASE_URL` (default `http://localhost:8000`)
+- `APIKEY_C1`, `APIKEY_C2`, `APIKEY_C3`
+- `INCOMING_JWT`
+- `HEADER_INCLUDE_VALUE`, `HEADER_REPLACE_VALUE`, `HEADER_IGNORE_VALUE`
 
 ## Customer Acceptance Checklist
 1. Validate plugin schema and config are loadable.

@@ -11,18 +11,24 @@ local OAuthClientContext = {
 }
 
 local CLAIM_HEADERS = {
-  { claim = "client_id", headers = { "client_id" } },
-  { claim = "app_id", headers = { "app_id" } },
-  { claim = "grant_type", headers = { "grant_type" } },
-  { claim = "oauth_resource_owner_id", headers = { "oauth_resource_owner_id" } },
-  { claim = "consent_id", headers = { "consent_id" } },
-  { claim = "ssoid", headers = { "ssoid" } },
-  { claim = "scopes", headers = { "scopes" } },
-  { claim = "x-apigw-origin-client-id", headers = { "x-apigw-origin-client-id", "x_apigw_origin_client_id" } },
-  { claim = "auth_identity_type", headers = { "auth_identity_type", "oauth_identity_type" } },
-  { claim = "oauth_identity_type", headers = { "oauth_identity_type", "auth_identity_type" } },
-  { claim = "approved_operation_types", headers = { "approved_operation_types" } },
+  "client_id",
+  "app_id",
+  "grant_type",
+  "oauth_resource_owner_id",
+  "consent_id",
+  "ssoid",
+  "scopes",
+  "x-apigw-origin-client-id",
+  "auth_identity_type",
+  "oauth_identity_type",
+  "approved_operation_types",
 }
+
+local INCLUDE_HEADER = "x-consumer-extra-claim"
+local REPLACE_HEADER = "x-consumer-replace-claim"
+local IGNORE_HEADER = "x-consumer-ignore-claim"
+local INCLUDE_CLAIM = "consumer_extra_claim"
+local REPLACE_TARGET_CLAIM = "oauth_identity_type"
 
 local function trim(s)
   if type(s) ~= "string" then
@@ -30,6 +36,51 @@ local function trim(s)
   end
 
   return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+end
+
+local function base64url_decode(input)
+  local base64 = input:gsub("-", "+"):gsub("_", "/")
+  local remainder = #base64 % 4
+  if remainder == 2 then
+    base64 = base64 .. "=="
+  elseif remainder == 3 then
+    base64 = base64 .. "="
+  elseif remainder ~= 0 then
+    return nil
+  end
+
+  return ngx.decode_base64(base64)
+end
+
+local function get_incoming_jwt_claims(conf)
+  local header_name = conf.incoming_jwt_header or "authorization"
+  local auth_header = kong.request.get_header(header_name)
+  if not auth_header or auth_header == "" then
+    return {}
+  end
+
+  local token = auth_header
+  local bearer = auth_header:match("^[Bb]earer%s+(.+)$")
+  if bearer then
+    token = bearer
+  end
+
+  local payload_segment = token:match("^[^.]+%.([^.]+)")
+  if not payload_segment then
+    return {}
+  end
+
+  local decoded_payload = base64url_decode(payload_segment)
+  if not decoded_payload then
+    return {}
+  end
+
+  local claims = cjson.decode(decoded_payload)
+  if type(claims) ~= "table" then
+    return {}
+  end
+
+  return claims
 end
 
 local function resolve_env_vault_reference(ref)
@@ -120,6 +171,7 @@ end
 
 local function build_token(signing_key, conf, payload)
   local header = {
+    tv = 2,
     typ = "JWT",
     alg = conf.algorithm,
     kid = conf.key_id,
@@ -157,25 +209,32 @@ local function build_payload(conf)
   local payload = {
     iat = ngx.time()
   }
+
+  local incoming_claims = get_incoming_jwt_claims(conf)
   local consumer = kong.client.get_consumer()
   local consumer_claims = parse_consumer_claims(consumer)
 
-  for _, mapping in ipairs(CLAIM_HEADERS) do
-    for _, header_name in ipairs(mapping.headers) do
-      local value = kong.request.get_header(header_name)
-      if value ~= nil and value ~= "" then
-        payload[mapping.claim] = value
-        break
-      end
-    end
-
-    if payload[mapping.claim] == nil then
-      local consumer_value = consumer_claims[mapping.claim]
-      if consumer_value ~= nil and consumer_value ~= "" then
-        payload[mapping.claim] = consumer_value
-      end
+  for _, claim in ipairs(CLAIM_HEADERS) do
+    local value = incoming_claims[claim]
+    if value ~= nil and value ~= "" then
+      payload[claim] = value
+    elseif consumer_claims[claim] ~= nil and consumer_claims[claim] ~= "" then
+      payload[claim] = consumer_claims[claim]
     end
   end
+
+  local header_1_value = kong.request.get_header(INCLUDE_HEADER)
+  if header_1_value ~= nil and header_1_value ~= "" then
+    payload[INCLUDE_CLAIM] = header_1_value
+  end
+
+  local header_2_value = kong.request.get_header(REPLACE_HEADER)
+  if header_2_value ~= nil and header_2_value ~= "" then
+    payload[REPLACE_TARGET_CLAIM] = header_2_value
+  end
+
+  -- Header 3 is intentionally ignored by design.
+  kong.request.get_header(IGNORE_HEADER)
 
   if conf.ttl then
     payload.exp = ngx.time() + conf.ttl

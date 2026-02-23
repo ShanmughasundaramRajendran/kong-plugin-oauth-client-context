@@ -14,3 +14,5 @@ luacov.report.html
 .containerid
 # exclude macOS metadata files
 .DS_Store
+
+node_modules
