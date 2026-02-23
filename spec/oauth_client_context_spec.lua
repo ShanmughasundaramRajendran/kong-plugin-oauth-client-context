@@ -87,18 +87,41 @@ describe("oauth-client-context plugin", function()
   end)
 
   local function assert_token_exists(path)
+    local function base64url_encode(input)
+      local encoded = ngx.encode_base64(input)
+      return encoded:gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
+    end
+
+    local function build_incoming_jwt()
+      local header = cjson.encode({
+        typ = "JWT",
+        alg = "none",
+      })
+
+      local payload = cjson.encode({
+        client_id = "jwt-client-123",
+        app_id = "jwt-app-456",
+        grant_type = "client_credentials",
+        oauth_resource_owner_id = "jwt-owner-789",
+        consent_id = "jwt-consent-111",
+        ssoid = "jwt-ssoid-222",
+        scopes = "payments:read payments:write",
+        ["x-apigw-origin-client-id"] = "jwt-origin-333",
+        oauth_identity_type = "oauth2-from-incoming-token",
+        auth_identity_type = "auth-from-incoming-token",
+        approved_operation_types = "query,mutation",
+      })
+
+      return base64url_encode(header) .. "." .. base64url_encode(payload) .. ".sig"
+    end
+
     local res = client:get(path, {
       headers = {
-        client_id = "client-123",
-        app_id = "app-456",
-        grant_type = "client_credentials",
-        oauth_resource_owner_id = "owner-789",
-        consent_id = "consent-111",
-        ssoid = "ssoid-222",
-        scopes = "payments:read payments:write",
-        ["x-apigw-origin-client-id"] = "origin-333",
-        oauth_identity_type = "oauth2",
-        approved_operation_types = "query,mutation",
+        Authorization = "Bearer " .. build_incoming_jwt(),
+        client_id = "legacy-header-should-not-be-used",
+        ["x-consumer-extra-claim"] = "include-header-1",
+        ["x-consumer-replace-claim"] = "replaced-by-header-2",
+        ["x-consumer-ignore-claim"] = "ignored-header-3",
       }
     })
     assert.response(res).has.status(200)
@@ -171,6 +194,7 @@ describe("oauth-client-context plugin", function()
 
     local header = cjson.decode(decoded_header)
     assert.is_not_nil(header)
+    assert.are.equal(2, header.tv)
     assert.are.equal(expected_alg, header.alg)
   end
 
@@ -186,17 +210,19 @@ describe("oauth-client-context plugin", function()
     assert.are.equal(expected_sub, payload.sub)
     assert.are.equal(expected_iss, payload.iss)
     assert.are.equal(expected_aud, payload.aud)
-    assert.are.equal("client-123", payload.client_id)
-    assert.are.equal("app-456", payload.app_id)
+    assert.are.equal("jwt-client-123", payload.client_id)
+    assert.are.equal("jwt-app-456", payload.app_id)
     assert.are.equal("client_credentials", payload.grant_type)
-    assert.are.equal("owner-789", payload.oauth_resource_owner_id)
-    assert.are.equal("consent-111", payload.consent_id)
-    assert.are.equal("ssoid-222", payload.ssoid)
+    assert.are.equal("jwt-owner-789", payload.oauth_resource_owner_id)
+    assert.are.equal("jwt-consent-111", payload.consent_id)
+    assert.are.equal("jwt-ssoid-222", payload.ssoid)
     assert.are.equal("payments:read payments:write", payload.scopes)
-    assert.are.equal("origin-333", payload["x-apigw-origin-client-id"])
-    assert.are.equal("oauth2", payload.auth_identity_type)
-    assert.are.equal("oauth2", payload.oauth_identity_type)
+    assert.are.equal("jwt-origin-333", payload["x-apigw-origin-client-id"])
+    assert.are.equal("auth-from-incoming-token", payload.auth_identity_type)
+    assert.are.equal("replaced-by-header-2", payload.oauth_identity_type)
     assert.are.equal("query,mutation", payload.approved_operation_types)
+    assert.are.equal("include-header-1", payload.consumer_extra_claim)
+    assert.is_nil(payload.consumer_ignore_claim)
   end
 
   it("injects x-client-auth-ctx header to upstream for RS256", function()

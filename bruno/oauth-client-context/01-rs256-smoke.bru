@@ -13,4 +13,8 @@ get {
 headers {
   Accept: application/json
   apikey: {{apikey_c1}}
+  Authorization: Bearer {{incoming_jwt_token}}
+  x-consumer-extra-claim: {{header_include}}
+  x-consumer-replace-claim: {{header_replace}}
+  x-consumer-ignore-claim: {{header_ignore}}
 }

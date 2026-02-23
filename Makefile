@@ -8,6 +8,7 @@ DOCKER                := docker
 PONGO                 := pongo
 KONG_ADMIN_URL        := http://localhost:8001
 KONG_MANAGER_URL      := http://localhost:8002
+INCOMING_TEST_JWT     := eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJjbGllbnRfaWQiOiJqd3QtY2xpZW50LTEyMyIsImFwcF9pZCI6Imp3dC1hcHAtNDU2IiwiZ3JhbnRfdHlwZSI6ImNsaWVudF9jcmVkZW50aWFscyIsIm9hdXRoX3Jlc291cmNlX293bmVyX2lkIjoiand0LW93bmVyLTc4OSIsImNvbnNlbnRfaWQiOiJqd3QtY29uc2VudC0xMTEiLCJzc29pZCI6Imp3dC1zc29pZC0yMjIiLCJzY29wZXMiOiJwYXltZW50czpyZWFkIHBheW1lbnRzOndyaXRlIiwieC1hcGlndy1vcmlnaW4tY2xpZW50LWlkIjoiand0LW9yaWdpbi0zMzMiLCJvYXV0aF9pZGVudGl0eV90eXBlIjoib2F1dGgyLWZyb20taW5jb21pbmctdG9rZW4iLCJhdXRoX2lkZW50aXR5X3R5cGUiOiJhdXRoLWZyb20taW5jb21pbmctdG9rZW4iLCJhcHByb3ZlZF9vcGVyYXRpb25fdHlwZXMiOiJxdWVyeSxtdXRhdGlvbiJ9.sig
 
 .DEFAULT_GOAL := help
 
@@ -90,6 +91,10 @@ lint:
 	@echo "Running luacheck..."
 	@luacheck kong || echo "luacheck not installed"
 
+## npm-install: Install Node test dependencies
+npm-install:
+	@npm install
+
 ## validate-config: Validate kong.yml
 validate-config:
 	$(COMPOSE) exec kong kong config parse /etc/kong/kong.yml
@@ -133,16 +138,14 @@ test-orders-es256:
 
 ## test-dynamic-claims: Validate claims are dynamically resolved from each authenticated consumer
 test-dynamic-claims:
-	@token=$$(curl -s -H "apikey: demo-consumer-apikey" http://localhost:8000/test-rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
+	@token=$$(curl -s -H "apikey: demo-consumer-apikey" -H "Authorization: Bearer $(INCOMING_TEST_JWT)" -H "x-consumer-extra-claim: include-header-1" -H "x-consumer-replace-claim: replaced-by-header-2" -H "x-consumer-ignore-claim: ignored-header-3" http://localhost:8000/test-rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
 	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
-	echo "$$payload" | jq -e '.client_id == "consumer-client-001" and .app_id == "consumer-app-001" and .approved_operation_types == "query,mutation"' >/dev/null
-	@token=$$(curl -s -H "apikey: demo-consumer-apikey-2" http://localhost:8000/billing/rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
-	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
-	echo "$$payload" | jq -e '.client_id == "consumer-client-002" and .app_id == "consumer-app-002" and .approved_operation_types == "query,subscription"' >/dev/null
-	@token=$$(curl -s -H "apikey: demo-consumer-apikey-3" http://localhost:8000/orders/es | jq -r '.headers["X-Client-Auth-Ctx"]'); \
-	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
-	echo "$$payload" | jq -e '.client_id == "consumer-client-003" and .app_id == "consumer-app-003" and .approved_operation_types == "mutation,query"' >/dev/null
-	@echo "Dynamic consumer claim resolution test passed"
+	echo "$$payload" | jq -e '.client_id == "jwt-client-123" and .app_id == "jwt-app-456" and .oauth_identity_type == "replaced-by-header-2" and .consumer_extra_claim == "include-header-1" and (has("consumer_ignore_claim") | not)' >/dev/null
+	@echo "Functional JWT extraction + include/replace/ignore header scenarios passed"
+
+## test-mocha: Run mocha functional suite against running local Kong
+test-mocha:
+	@npm run test:functional
 
 ## test-proxy: Backward-compatible alias to RS256 route
 test-proxy:
