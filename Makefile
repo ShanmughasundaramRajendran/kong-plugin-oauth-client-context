@@ -159,7 +159,7 @@ test-admin:
 pongo-up:
 	$(PONGO) up
 
-## pongo-test: Run plugin tests inside Pongo
+## pongo-test: Run schema + unit + integration plugin tests inside Pongo
 pongo-test:
 	$(PONGO) run
 

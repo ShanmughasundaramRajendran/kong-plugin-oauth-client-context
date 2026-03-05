@@ -55,6 +55,34 @@ function decodeBase64Url(input) {
   return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
 
+function encodeBase64Url(input) {
+  return Buffer.from(input, "utf8")
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+function buildIncomingJwt(overrides = {}) {
+  const header = { typ: "JWT", alg: "none" };
+  const payload = {
+    client_id: "jwt-client-123",
+    app_id: "jwt-app-456",
+    grant_type: "client_credentials",
+    oauth_resource_owner_id: "jwt-owner-789",
+    consent_id: "jwt-consent-111",
+    ssoid: "jwt-ssoid-222",
+    scopes: "payments:read payments:write",
+    "x-apigw-origin-client-id": "jwt-origin-333",
+    oauth_identity_type: "oauth2-from-incoming-token",
+    auth_identity_type: "auth-from-incoming-token",
+    approved_operation_types: "query,mutation",
+    ...overrides,
+  };
+
+  return `${encodeBase64Url(JSON.stringify(header))}.${encodeBase64Url(JSON.stringify(payload))}.sig`;
+}
+
 function decodeJwt(token) {
   const parts = token.split(".");
   assert.strictEqual(parts.length, 3, "JWT should have 3 parts");
@@ -107,13 +135,20 @@ function verifyJwtSignature(token, alg) {
 }
 
 async function getRoute(path, apikey, opts = {}) {
-  const headers = {
-    Accept: "application/json",
-    ...opts.headers,
-  };
-
+  const headers = new Headers();
+  headers.set("Accept", "application/json");
   if (apikey) {
-    headers.apikey = apikey;
+    headers.set("apikey", apikey);
+  }
+
+  if (opts.headers instanceof Headers) {
+    for (const [key, value] of opts.headers.entries()) {
+      headers.append(key, value);
+    }
+  } else if (opts.headers && typeof opts.headers === "object") {
+    for (const [key, value] of Object.entries(opts.headers)) {
+      headers.set(key, value);
+    }
   }
 
   const response = await fetch(`${BASE_URL}${path}`, {
@@ -121,7 +156,13 @@ async function getRoute(path, apikey, opts = {}) {
     headers,
   });
 
-  const body = await response.json();
+  const contentType = response.headers.get("content-type") || "";
+  let body;
+  if (contentType.includes("application/json")) {
+    body = await response.json();
+  } else {
+    body = { raw: await response.text() };
+  }
   return { response, body };
 }
 
@@ -233,6 +274,115 @@ describe("oauth-client-context functional suite (mocha)", function () {
 
     assert.strictEqual(response.status, 200);
     const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.client_id, "consumer-client-001");
+    assert.strictEqual(payload.app_id, "consumer-app-001");
+  });
+
+  it("accepts lowercase bearer scheme", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: `bearer ${buildIncomingJwt({ client_id: "from-lowercase-bearer" })}`,
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.client_id, "from-lowercase-bearer");
+  });
+
+  it("accepts raw token without Bearer prefix", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: buildIncomingJwt({ app_id: "from-raw-token" }),
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.app_id, "from-raw-token");
+  });
+
+  it("falls back to consumer claims when incoming JWT payload is malformed", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: "Bearer malformed.jwt",
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.client_id, "consumer-client-001");
+    assert.strictEqual(payload.app_id, "consumer-app-001");
+  });
+
+  it("does not include or replace claims when include/replace headers are empty", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: `Bearer ${buildIncomingJwt({ oauth_identity_type: "from-incoming-claim" })}`,
+        "x-consumer-extra-claim": "",
+        "x-consumer-replace-claim": "",
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.oauth_identity_type, "from-incoming-claim");
+    assert.ok(!Object.prototype.hasOwnProperty.call(payload, "consumer_extra_claim"));
+  });
+
+  it("sets exp relative to iat based on route ttl", async function () {
+    const rs = await getRoute("/test-rs", APIKEY_C1, {
+      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
+    });
+    const ordersEs = await getRoute("/orders/es", APIKEY_C3, {
+      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
+    });
+
+    const rsPayload = decodeJwt(rs.body.headers["X-Client-Auth-Ctx"]).payload;
+    const ordersPayload = decodeJwt(ordersEs.body.headers["X-Client-Auth-Ctx"]).payload;
+
+    assert.ok(rsPayload.exp - rsPayload.iat >= 60 && rsPayload.exp - rsPayload.iat <= 61);
+    assert.ok(ordersPayload.exp - ordersPayload.iat >= 180 && ordersPayload.exp - ordersPayload.iat <= 181);
+  });
+
+  it("handles duplicate replace-claim header values without failing", async function () {
+    const multiHeaders = new Headers();
+    multiHeaders.set("Authorization", `Bearer ${INCOMING_JWT}`);
+    multiHeaders.append("x-consumer-replace-claim", "something-1");
+    multiHeaders.append("x-consumer-replace-claim", "something-2");
+
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: multiHeaders,
+    });
+
+    assert.strictEqual(response.status, 200);
+    const token = body.headers["X-Client-Auth-Ctx"];
+    assert.ok(token);
+
+    const { payload } = decodeJwt(token);
+    assert.ok(
+      typeof payload.oauth_identity_type === "string" &&
+      (payload.oauth_identity_type.includes("something-1") ||
+       payload.oauth_identity_type.includes("something-2")),
+      `unexpected oauth_identity_type: ${payload.oauth_identity_type}`
+    );
+  });
+
+  it("falls back to consumer claim when incoming claim is empty", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: `Bearer ${buildIncomingJwt({
+          client_id: "",
+          app_id: "",
+        })}`,
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const token = body.headers["X-Client-Auth-Ctx"];
+    assert.ok(token);
+
+    const { payload } = decodeJwt(token);
     assert.strictEqual(payload.client_id, "consumer-client-001");
     assert.strictEqual(payload.app_id, "consumer-app-001");
   });

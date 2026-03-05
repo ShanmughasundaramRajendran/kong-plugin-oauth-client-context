@@ -11,7 +11,10 @@ This POC supports both signing algorithms required by the customer:
 - Algorithm is schema-validated (`RS256` or `ES256` only).
 - `ttl` is bounded (`1..86400`) to avoid invalid or excessively long-lived tokens.
 - Signing errors fail safely with HTTP 500 and an explicit message.
-- Pongo integration tests validate both algorithm paths.
+- Runtime fail-fast guards return HTTP 500 for invalid plugin config (`Invalid plugin configuration`).
+- Incoming JWT claim parsing uses Kong's native `jwt_parser`.
+- Vault references are resolved via Kong's native vault API (`kong.vault.get`).
+- Pongo test suites cover schema, unit, and integration behavior.
 
 ## Configuration
 - `key_id` (required): JWT `kid` header value.
@@ -28,13 +31,14 @@ This POC supports both signing algorithms required by the customer:
 - The plugin resolves signing key using `key_id` and `algorithm`.
 - `private_key` can use Kong Vault syntax (example: `{vault://env/LOCAL_TEST_RS_PRIVATE_KEY}`).
 - Kong resolves the vault reference before plugin execution.
-- Parsed signing keys are cached in-plugin by `algorithm:key_id` for 10 minutes (`600` seconds).
+- Parsed signing keys are cached in-plugin by `algorithm:key_id:private_key` for 10 minutes (`600` seconds).
 - Generated JWT header includes static `tv: 2`.
 
 ## Claims Added To JWT
 For both `RS256` and `ES256`, the plugin includes these attributes in JWT claims. Source priority is:
 1. Incoming JWT token claims (decoded from `Authorization: Bearer <token>`)
 2. Authenticated consumer tags (`claim:<name>=<value>`) as fallback when incoming token claim is absent
+3. Empty claim values are treated as missing and also fall back to consumer tags
 
 Supported claims:
 - `client_id`
@@ -64,6 +68,7 @@ The plugin supports three explicit consumer request headers:
 - `x-consumer-extra-claim`: included as `consumer_extra_claim` in generated JWT.
 - `x-consumer-replace-claim`: replaces outgoing JWT `oauth_identity_type`.
 - `x-consumer-ignore-claim`: intentionally ignored and not added to generated JWT.
+- If a request header has multiple values, the first value is used.
 
 ## Pongo Test Workflow
 ```bash
@@ -72,10 +77,16 @@ make pongo-test
 make pongo-down
 ```
 
+Current Pongo spec layout:
+- `spec/01-schema_spec.lua`
+- `spec/02-unit_spec.lua`
+- `spec/10-integration_spec.lua`
+
 ## Mocha Functional Suite
 Functional Mocha tests are available at:
 - `test/functional/mocha/oauth_client_context/oauth_ctx_test.js`
 - Includes signature validation checks for both `RS256` and `ES256` generated JWTs.
+- Includes edge coverage for duplicate header values and empty-claim fallback to consumer tags.
 
 Run locally (with Kong already running):
 ```bash
@@ -115,7 +126,7 @@ make pongo-up
 make pongo-test
 make pongo-down
 ```
-Pass criteria: `4 successes / 0 failures / 0 errors / 0 pending`.
+Pass criteria: all schema, unit, and integration specs pass with `0 failures`.
 
 5. Confirm both customer-required algorithms are configured in declarative config.
 ```bash
@@ -173,7 +184,7 @@ make down
 ## Bruno Collection
 - Import folder: `bruno/oauth-client-context`
 - Environment file: `bruno/oauth-client-context/environments/local.bru`
-- Collection name: `oauth-client-context-v5`
+- Collection name: `oauth-client-context-v6`
 - Included requests:
   - `RS256 C1 V5` (`GET {{base_url}}/test-rs`, `apikey_c1`)
   - `ES256 C1 V5` (`GET {{base_url}}/test-es`, `apikey_c1`)
@@ -181,5 +192,10 @@ make down
   - `Billing ES256 C2 V5` (`GET {{base_url}}/billing/es`, `apikey_c2`)
   - `Orders RS256 C3 V5` (`GET {{base_url}}/orders/rs`, `apikey_c3`)
   - `Orders ES256 C3 V5` (`GET {{base_url}}/orders/es`, `apikey_c3`)
+  - `RS256 Lowercase Bearer` (`GET {{base_url}}/test-rs`, `authorization: bearer {{incoming_jwt_token}}`)
+  - `RS256 Raw Token` (`GET {{base_url}}/test-rs`, `authorization: {{incoming_jwt_token}}`)
+  - `RS256 Empty Claims Fallback` (`GET {{base_url}}/test-rs`, token with empty `client_id`/`app_id`)
   - `Admin Enabled Plugins` (`GET {{admin_url}}/plugins/enabled`)
-- All route requests send only `apikey`; JWT claims are read dynamically from the matched consumer tags.
+- Route requests use `apikey` + `Authorization` by default.
+- `x-consumer-extra-claim` and `x-consumer-replace-claim` are optional test headers.
+- `x-consumer-ignore-claim` is included to verify it is ignored by plugin logic.

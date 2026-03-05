@@ -1,15 +1,24 @@
 local cjson = require "cjson.safe"
+local jwt_parser = require "kong.plugins.jwt.jwt_parser"
 local lrucache = require "resty.lrucache"
 local pkey = require "resty.openssl.pkey"
 
 local parsed_key_cache = lrucache.new(100)
 local KEY_CACHE_TTL_SECONDS = 600
+local CJSON_NULL = cjson.null
+
+local ngx_decode_base64 = ngx.decode_base64
+local ngx_encode_base64 = ngx.encode_base64
+local ngx_unescape_uri = ngx.unescape_uri
+local ngx_time = ngx.time
 
 local OAuthClientContext = {
   PRIORITY = 900,
   VERSION = "2.0.0",
 }
 
+-- Claims that can be propagated from the incoming token (or consumer tags fallback)
+-- into the generated client context JWT.
 local CLAIM_HEADERS = {
   "client_id",
   "app_id",
@@ -26,51 +35,64 @@ local CLAIM_HEADERS = {
 
 local INCLUDE_HEADER = "x-consumer-extra-claim"
 local REPLACE_HEADER = "x-consumer-replace-claim"
-local IGNORE_HEADER = "x-consumer-ignore-claim"
 local INCLUDE_CLAIM = "consumer_extra_claim"
 local REPLACE_TARGET_CLAIM = "oauth_identity_type"
 
-local function trim(s)
-  if type(s) ~= "string" then
-    return s
-  end
+local ALGORITHMS = {
+  RS256 = "RS256",
+  ES256 = "ES256",
+}
 
-  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
+local function is_non_empty(value)
+  return value ~= nil and value ~= "" and value ~= CJSON_NULL
 end
 
-local function base64url_decode(input)
-  local base64 = input:gsub("-", "+"):gsub("_", "/")
+local function get_first_header_value(value)
+  if type(value) == "table" then
+    return value[1]
+  end
+
+  return value
+end
+
+local function payload_set_value(payload, key, value)
+  value = get_first_header_value(value)
+  if is_non_empty(value) then
+    payload[key] = value
+  end
+end
+
+local function extract_bearer_token(raw_header)
+  local header = get_first_header_value(raw_header)
+  if not is_non_empty(header) then
+    return nil
+  end
+
+  local bearer = header:match("^[Bb]earer%s+(.+)$")
+  if bearer and bearer ~= "" then
+    return bearer
+  end
+
+  return header
+end
+
+local function decode_claims_from_token_payload(token)
+  local payload_segment = token:match("^[^.]+%.([^.]+)")
+  if not payload_segment then
+    return {}
+  end
+
+  local base64 = payload_segment:gsub("-", "+"):gsub("_", "/")
   local remainder = #base64 % 4
   if remainder == 2 then
     base64 = base64 .. "=="
   elseif remainder == 3 then
     base64 = base64 .. "="
   elseif remainder ~= 0 then
-    return nil
-  end
-
-  return ngx.decode_base64(base64)
-end
-
-local function get_incoming_jwt_claims(conf)
-  local header_name = conf.incoming_jwt_header or "authorization"
-  local auth_header = kong.request.get_header(header_name)
-  if not auth_header or auth_header == "" then
     return {}
   end
 
-  local token = auth_header
-  local bearer = auth_header:match("^[Bb]earer%s+(.+)$")
-  if bearer then
-    token = bearer
-  end
-
-  local payload_segment = token:match("^[^.]+%.([^.]+)")
-  if not payload_segment then
-    return {}
-  end
-
-  local decoded_payload = base64url_decode(payload_segment)
+  local decoded_payload = ngx_decode_base64(base64)
   if not decoded_payload then
     return {}
   end
@@ -83,17 +105,28 @@ local function get_incoming_jwt_claims(conf)
   return claims
 end
 
-local function resolve_env_vault_reference(ref)
-  local secret_name = ref:match("^%{vault://env/([^}]+)%}$")
-  if not secret_name then
-    return nil
+local function get_incoming_jwt_claims(conf)
+  local header_name = conf.incoming_jwt_header or "authorization"
+  local token = extract_bearer_token(kong.request.get_header(header_name))
+  if not token then
+    return {}
   end
 
-  return os.getenv(secret_name)
+  local jwt, err = jwt_parser:new(token)
+  if not jwt then
+    kong.log.debug("[oauth-client-context] unable to parse incoming JWT from header ", header_name, ": ", err)
+    return decode_claims_from_token_payload(token)
+  end
+
+  if type(jwt.claims) == "table" then
+    return jwt.claims
+  end
+
+  return decode_claims_from_token_payload(token)
 end
 
 local function resolve_private_key_value(private_key_ref)
-  local ref = trim(private_key_ref)
+  local ref = private_key_ref
   if not ref or ref == "" then
     return nil, "private key is empty"
   end
@@ -115,22 +148,17 @@ local function resolve_private_key_value(private_key_ref)
     end
   end
 
-  local env_secret = resolve_env_vault_reference(ref)
-  if env_secret and env_secret ~= "" then
-    return env_secret, nil
-  end
-
   return nil, "failed to resolve vault reference " .. ref
 end
 
 local function get_signing_key(conf)
-  local cache_key = conf.algorithm .. ":" .. conf.key_id
+  local cache_key = conf.algorithm .. ":" .. conf.key_id .. ":" .. conf.private_key
   local signing_key = parsed_key_cache:get(cache_key)
   if signing_key then
     return signing_key
   end
 
-  -- `private_key` may be a Kong vault reference; Kong resolves it before plugin access.
+  -- `private_key` can be a raw PEM value or a Kong Vault reference.
   local private_key, err = resolve_private_key_value(conf.private_key)
   if not private_key then
     return nil, err
@@ -151,11 +179,12 @@ local function parse_consumer_claims(consumer)
     return claims
   end
 
+  -- Expected tag shape: claim:<name>=<url-escaped-value>
   for _, tag in ipairs(consumer.tags) do
     if type(tag) == "string" then
       local key, value = tag:match("^claim:([^=]+)=(.+)$")
-      if key and value and value ~= "" then
-        claims[key] = ngx.unescape_uri(value)
+      if key and is_non_empty(value) then
+        claims[key] = ngx_unescape_uri(value)
       end
     end
   end
@@ -164,12 +193,16 @@ local function parse_consumer_claims(consumer)
 end
 
 local function base64url_encode(input)
-  local encoded = ngx.encode_base64(input)
+  local encoded = ngx_encode_base64(input)
   encoded = encoded:gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
   return encoded
 end
 
 local function build_token(signing_key, conf, payload)
+  if not signing_key or type(signing_key.sign) ~= "function" then
+    return nil, "invalid signing key object"
+  end
+
   local header = {
     tv = 2,
     typ = "JWT",
@@ -191,7 +224,7 @@ local function build_token(signing_key, conf, payload)
 
   local signature
   local err
-  if conf.algorithm == "ES256" then
+  if conf.algorithm == ALGORITHMS.ES256 then
     signature, err = signing_key:sign(signing_input, "SHA256", nil, { ecdsa_use_raw = true })
   else
     local padding = signing_key.PADDINGS and signing_key.PADDINGS.RSA_PKCS1_PADDING or nil
@@ -206,55 +239,80 @@ local function build_token(signing_key, conf, payload)
 end
 
 local function build_payload(conf)
+  local now = ngx_time()
   local payload = {
-    iat = ngx.time()
+    iat = now,
   }
 
   local incoming_claims = get_incoming_jwt_claims(conf)
   local consumer = kong.client.get_consumer()
   local consumer_claims = parse_consumer_claims(consumer)
 
+  -- Claim precedence:
+  -- 1) Incoming JWT claims
+  -- 2) Consumer tag claims (fallback)
   for _, claim in ipairs(CLAIM_HEADERS) do
     local value = incoming_claims[claim]
-    if value ~= nil and value ~= "" then
-      payload[claim] = value
-    elseif consumer_claims[claim] ~= nil and consumer_claims[claim] ~= "" then
-      payload[claim] = consumer_claims[claim]
+    if is_non_empty(value) then
+      payload_set_value(payload, claim, value)
+    else
+      payload_set_value(payload, claim, consumer_claims[claim])
     end
   end
 
-  local header_1_value = kong.request.get_header(INCLUDE_HEADER)
-  if header_1_value ~= nil and header_1_value ~= "" then
-    payload[INCLUDE_CLAIM] = header_1_value
-  end
+  payload_set_value(payload, INCLUDE_CLAIM, kong.request.get_header(INCLUDE_HEADER))
 
-  local header_2_value = kong.request.get_header(REPLACE_HEADER)
-  if header_2_value ~= nil and header_2_value ~= "" then
-    payload[REPLACE_TARGET_CLAIM] = header_2_value
-  end
-
-  -- Header 3 is intentionally ignored by design.
-  kong.request.get_header(IGNORE_HEADER)
+  payload_set_value(payload, REPLACE_TARGET_CLAIM, kong.request.get_header(REPLACE_HEADER))
 
   if conf.ttl then
-    payload.exp = ngx.time() + conf.ttl
+    payload.exp = now + conf.ttl
   end
 
-  if consumer and not payload.client_id then
-    payload.client_id = consumer_claims.client_id or consumer.custom_id or consumer.username or consumer.id
+  if consumer and not is_non_empty(payload.client_id) then
+    payload_set_value(payload, "client_id", consumer_claims.client_id or consumer.custom_id or consumer.username or consumer.id)
   end
 
-  payload.sub = conf.subject or payload.client_id
-  payload.iss = conf.issuer or kong.request.get_host()
-  payload.aud = conf.audience or kong.request.get_host()
+  payload_set_value(payload, "sub", conf.subject or payload.client_id)
+  payload_set_value(payload, "iss", conf.issuer or kong.request.get_host())
+  payload_set_value(payload, "aud", conf.audience or kong.request.get_host())
 
   return payload
 end
 
+-- rewrite phase:
+-- Runs early in the request lifecycle (before routing and access control).
+-- This plugin does not mutate request state at this stage.
+function OAuthClientContext:rewrite(_conf)
+  return
+end
+
+-- access phase:
+-- Runs after routing/auth and before proxying upstream.
+-- The plugin builds and signs the client context JWT and injects it as a header.
 function OAuthClientContext:access(conf)
+
+  if type(conf) ~= "table" then
+    kong.log.err("[oauth-client-context] invalid plugin config: expected table")
+    return kong.response.exit(500, { message = "Invalid plugin configuration" })
+  end
 
   if conf.enabled == false then
     return
+  end
+
+  if not is_non_empty(conf.header_name) then
+    kong.log.err("[oauth-client-context] invalid header_name")
+    return kong.response.exit(500, { message = "Invalid plugin configuration" })
+  end
+
+  if conf.algorithm ~= ALGORITHMS.RS256 and conf.algorithm ~= ALGORITHMS.ES256 then
+    kong.log.err("[oauth-client-context] unsupported algorithm: ", tostring(conf.algorithm))
+    return kong.response.exit(500, { message = "Invalid plugin configuration" })
+  end
+
+  if not is_non_empty(conf.key_id) or not is_non_empty(conf.private_key) then
+    kong.log.err("[oauth-client-context] key_id/private_key must be configured")
+    return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
   local signing_key, err = get_signing_key(conf)
@@ -276,6 +334,13 @@ function OAuthClientContext:access(conf)
   kong.service.request.set_header(conf.header_name, token)
   kong.response.set_header(conf.header_name, token)
 
+end
+
+-- log phase:
+-- Runs after the upstream response is sent to the client.
+-- This plugin currently has no post-response logging side effects.
+function OAuthClientContext:log(_conf)
+  return
 end
 
 return OAuthClientContext

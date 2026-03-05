@@ -1,6 +1,8 @@
 local helpers = require "spec.helpers"
 local cjson = require "cjson.safe"
-describe("oauth-client-context plugin", function()
+
+-- 10-integration_spec.lua: end-to-end tests against a running Kong + upstream.
+describe("oauth-client-context plugin (10 integration)", function()
 
   local client
 
@@ -86,47 +88,61 @@ describe("oauth-client-context plugin", function()
     end
   end)
 
-  local function assert_token_exists(path)
-    local function base64url_encode(input)
-      local encoded = ngx.encode_base64(input)
-      return encoded:gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
+  local function base64url_encode(input)
+    local encoded = ngx.encode_base64(input)
+    return encoded:gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
+  end
+
+  local function build_incoming_jwt(overrides)
+    -- We only need a decodable token shape for claim extraction tests.
+    -- Incoming token signature is intentionally not verified by the plugin.
+    local header = cjson.encode({
+      typ = "JWT",
+      alg = "none",
+    })
+
+    local payload = {
+      client_id = "jwt-client-123",
+      app_id = "jwt-app-456",
+      grant_type = "client_credentials",
+      oauth_resource_owner_id = "jwt-owner-789",
+      consent_id = "jwt-consent-111",
+      ssoid = "jwt-ssoid-222",
+      scopes = "payments:read payments:write",
+      ["x-apigw-origin-client-id"] = "jwt-origin-333",
+      oauth_identity_type = "oauth2-from-incoming-token",
+      auth_identity_type = "auth-from-incoming-token",
+      approved_operation_types = "query,mutation",
+    }
+
+    if type(overrides) == "table" then
+      for key, value in pairs(overrides) do
+        payload[key] = value
+      end
     end
 
-    local function build_incoming_jwt()
-      -- We only need a decodable token shape for claim extraction tests.
-      -- Incoming token signature is intentionally not verified by the plugin.
-      local header = cjson.encode({
-        typ = "JWT",
-        alg = "none",
-      })
+    return base64url_encode(header) .. "." .. base64url_encode(cjson.encode(payload)) .. ".sig"
+  end
 
-      local payload = cjson.encode({
-        client_id = "jwt-client-123",
-        app_id = "jwt-app-456",
-        grant_type = "client_credentials",
-        oauth_resource_owner_id = "jwt-owner-789",
-        consent_id = "jwt-consent-111",
-        ssoid = "jwt-ssoid-222",
-        scopes = "payments:read payments:write",
-        ["x-apigw-origin-client-id"] = "jwt-origin-333",
-        oauth_identity_type = "oauth2-from-incoming-token",
-        auth_identity_type = "auth-from-incoming-token",
-        approved_operation_types = "query,mutation",
-      })
+  local function assert_token_exists(path, opts)
+    local headers = {
+      Authorization = "Bearer " .. build_incoming_jwt(),
+      -- Legacy header value is sent intentionally to verify that
+      -- claims are sourced from incoming JWT first, not request headers.
+      client_id = "legacy-header-should-not-be-used",
+      ["x-consumer-extra-claim"] = "include-header-1",
+      ["x-consumer-replace-claim"] = "replaced-by-header-2",
+      ["x-consumer-ignore-claim"] = "ignored-header-3",
+    }
 
-      return base64url_encode(header) .. "." .. base64url_encode(payload) .. ".sig"
+    if opts and type(opts.headers) == "table" then
+      for key, value in pairs(opts.headers) do
+        headers[key] = value
+      end
     end
 
     local res = client:get(path, {
-      headers = {
-        Authorization = "Bearer " .. build_incoming_jwt(),
-        -- Legacy header value is sent intentionally to verify that
-        -- claims are sourced from incoming JWT first, not request headers.
-        client_id = "legacy-header-should-not-be-used",
-        ["x-consumer-extra-claim"] = "include-header-1",
-        ["x-consumer-replace-claim"] = "replaced-by-header-2",
-        ["x-consumer-ignore-claim"] = "ignored-header-3",
-      }
+      headers = headers
     })
     assert.response(res).has.status(200)
 
@@ -202,7 +218,7 @@ describe("oauth-client-context plugin", function()
     assert.are.equal(expected_alg, header.alg)
   end
 
-  local function assert_jwt_claims(token, expected_sub, expected_iss, expected_aud)
+  local function decode_jwt_payload(token)
     local payload_segment = token:match("^[^.]+%.([^.]+)")
     assert.is_not_nil(payload_segment)
 
@@ -211,6 +227,11 @@ describe("oauth-client-context plugin", function()
 
     local payload = cjson.decode(decoded_payload)
     assert.is_not_nil(payload)
+    return payload
+  end
+
+  local function assert_jwt_claims(token, expected_sub, expected_iss, expected_aud)
+    local payload = decode_jwt_payload(token)
     assert.are.equal(expected_sub, payload.sub)
     assert.are.equal(expected_iss, payload.iss)
     assert.are.equal(expected_aud, payload.aud)
@@ -259,6 +280,69 @@ describe("oauth-client-context plugin", function()
     assert_jwt_format(token)
     assert_jwt_alg(token, "ES256")
     assert_jwt_claims(token, "es-client", "kong-gateway", "upstream-es")
+  end)
+
+  it("accepts lowercase bearer scheme", function()
+    local token = assert_token_exists("/test-rs", {
+      headers = {
+        Authorization = "bearer " .. build_incoming_jwt({
+          client_id = "jwt-client-lowercase-bearer"
+        }),
+      }
+    })
+
+    local payload = decode_jwt_payload(token)
+    assert.are.equal("jwt-client-lowercase-bearer", payload.client_id)
+  end)
+
+  it("accepts raw token without Bearer prefix", function()
+    local token = assert_token_exists("/test-rs", {
+      headers = {
+        Authorization = build_incoming_jwt({
+          app_id = "jwt-app-raw-token"
+        }),
+      }
+    })
+
+    local payload = decode_jwt_payload(token)
+    assert.are.equal("jwt-app-raw-token", payload.app_id)
+  end)
+
+  it("ignores malformed incoming token payload", function()
+    local token = assert_token_exists("/test-rs", {
+      headers = {
+        Authorization = "Bearer malformed.jwt",
+      }
+    })
+
+    local payload = decode_jwt_payload(token)
+    assert.are.equal("rs-client", payload.sub)
+    assert.is_nil(payload.client_id)
+    assert.are.equal("replaced-by-header-2", payload.oauth_identity_type)
+  end)
+
+  it("does not include or replace claims when include/replace headers are empty", function()
+    local token = assert_token_exists("/test-rs", {
+      headers = {
+        Authorization = "Bearer " .. build_incoming_jwt({
+          oauth_identity_type = "incoming-oauth-identity-type"
+        }),
+        ["x-consumer-extra-claim"] = "",
+        ["x-consumer-replace-claim"] = "",
+      }
+    })
+
+    local payload = decode_jwt_payload(token)
+    assert.are.equal("incoming-oauth-identity-type", payload.oauth_identity_type)
+    assert.is_nil(payload.consumer_extra_claim)
+  end)
+
+  it("applies default ttl when ttl is not explicitly configured", function()
+    local token = assert_token_exists("/test-rs")
+    local payload = decode_jwt_payload(token)
+    assert.is_not_nil(payload.iat)
+    assert.is_not_nil(payload.exp)
+    assert.is_true(payload.exp - payload.iat >= 60 and payload.exp - payload.iat <= 61)
   end)
 
 end)

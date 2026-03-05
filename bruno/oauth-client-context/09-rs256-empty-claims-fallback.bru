@@ -1,0 +1,19 @@
+meta {
+  name: RS256 Empty Claims Fallback
+  type: http
+  seq: 9
+}
+
+get {
+  url: {{base_url}}/test-rs
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  apikey: {{apikey_c1}}
+  Authorization: Bearer {{incoming_jwt_token_empty_claims}}
+  x-consumer-extra-claim: {{header_include}}
+  x-consumer-replace-claim: {{header_replace}}
+}

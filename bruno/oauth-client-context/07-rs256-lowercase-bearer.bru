@@ -1,0 +1,19 @@
+meta {
+  name: RS256 Lowercase Bearer
+  type: http
+  seq: 7
+}
+
+get {
+  url: {{base_url}}/test-rs
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  apikey: {{apikey_c1}}
+  Authorization: bearer {{incoming_jwt_token}}
+  x-consumer-extra-claim: {{header_include}}
+  x-consumer-replace-claim: {{header_replace}}
+}
