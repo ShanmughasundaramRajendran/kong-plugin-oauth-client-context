@@ -37,14 +37,11 @@ This POC supports both signing algorithms required by the customer:
 - Kong resolves the vault reference before plugin execution.
 - Parsed signing keys are cached in-plugin by `algorithm:key_reference` for 10 minutes (`600` seconds).
 - Generated JWT header includes static `tv: 2`.
-- Local compose enables `aws` vault backend (and `env` fallback). Configure:
+- Local compose enables `aws` vault backend. Configure:
   - `KONG_AWS_REGION`
   - `AWS_ACCESS_KEY_ID`
   - `AWS_SECRET_ACCESS_KEY`
   - optional `KONG_AWS_SM_ENDPOINT` (for localstack/non-prod endpoint override)
-- Legacy local env vault keys (fallback only):
-  - `OAUTH_CTX_RS256_SIGNING_KEY`
-  - `OAUTH_CTX_ES256_SIGNING_KEY`
 
 ## Claims Added To JWT
 For both `RS256` and `ES256`, the plugin includes these attributes in JWT claims. Source priority is:
@@ -161,7 +158,7 @@ Pass criteria: both lines are present in `config/kong.yml`.
 - All routes have `key-auth` enabled (`apikey` header).
 - Claims are resolved dynamically per authenticated consumer from that consumer's `claim:*` tags.
 - All route plugin configs use Kong Vault `aws` references for signing keys.
-- Docker compose enables Kong Vault providers with `KONG_VAULTS=aws,env` (`env` kept as fallback for local testing).
+- Docker compose enables Kong Vault providers with `KONG_VAULTS=aws`.
 
 ## Mac Terminal Runbook (Consolidated Commands)
 ```bash

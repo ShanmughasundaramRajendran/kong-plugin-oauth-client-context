@@ -68,7 +68,7 @@ services:
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://env/OAUTH_CTX_RS256_SIGNING_KEY}"
+              private_key: "{vault://aws/oauth-client-context/test-rs/private_key}"
               additional_headers:
                 - header_name: x-extra-claim
                   claim_name: extra_claim
@@ -90,7 +90,7 @@ services:
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://env/OAUTH_CTX_ES256_SIGNING_KEY}"
+              private_key: "{vault://aws/oauth-client-context/test-es/private_key}"
   - name: billing-service
     url: http://httpbin.org/anything
     routes:
@@ -111,7 +111,7 @@ services:
               approved_operation_types: mutation
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://env/BILLING_RS_PRIVATE_KEY}"
+              private_key: "{vault://aws/oauth-client-context/billing-rs/private_key}"
       - name: billing-route-es
         paths:
           - /billing/es
@@ -129,7 +129,7 @@ services:
               approved_operation_types: subscription
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://env/BILLING_ES_PRIVATE_KEY}"
+              private_key: "{vault://aws/oauth-client-context/billing-es/private_key}"
   - name: orders-service
     url: http://httpbin.org/anything
     routes:
@@ -150,7 +150,7 @@ services:
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://env/ORDERS_RS_PRIVATE_KEY}"
+              private_key: "{vault://aws/oauth-client-context/orders-rs/private_key}"
       - name: orders-route-es
         paths:
           - /orders/es
@@ -168,4 +168,4 @@ services:
               approved_operation_types: subscription
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://env/ORDERS_ES_PRIVATE_KEY}"
+              private_key: "{vault://aws/oauth-client-context/orders-es/private_key}"

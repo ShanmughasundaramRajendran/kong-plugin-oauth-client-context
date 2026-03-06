@@ -11,7 +11,7 @@ services:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
       # Enable AWS Secrets Manager vault backend. Keep env enabled for local fallback/testing.
-      KONG_VAULTS: "${KONG_VAULTS:-aws,env}"
+      KONG_VAULTS: "${KONG_VAULTS:-aws}"
       # AWS region used by Kong AWS vault backend.
       KONG_AWS_REGION: "${KONG_AWS_REGION:-us-east-1}"
       # Optional endpoint override for localstack/non-prod testing.
