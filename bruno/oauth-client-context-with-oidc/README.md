@@ -8,6 +8,7 @@ This collection validates OIDC introspection-header-driven claim sourcing.
 - Claims are sourced from `X-Kong-Introspection-Response` (base64 JSON).
 - JWT Authorization header is not used for claim extraction.
 - Missing/malformed/empty introspection claim values fall back to consumer `claim:*` tags.
+- `approved_operation_types` is still sourced from plugin config (not from introspection payload).
 - Include/replace request headers still apply:
   - `x-consumer-extra-claim` -> `consumer_extra_claim`
   - `x-consumer-replace-claim` -> overrides `oauth_identity_type`

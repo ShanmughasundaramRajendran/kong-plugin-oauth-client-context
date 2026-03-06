@@ -10,11 +10,41 @@ return {
       config = {
         type = "record",
         fields = {
-          { enabled = { type = "boolean", default = true } },
-          -- Kong vault reference for signing key (example: {vault://env/LOCAL_TEST_RS_PRIVATE_KEY}).
-          { signing_key_vault_reference = { type = "string", required = true } },
-          -- Optional syntax key used when the resolved vault secret is table/json.
-          { signing_key_secret_syntax_key = { type = "string", required = false, default = "private_key" } },
+          -- Backward-compatible toggle name from legacy schema.
+          { propagate_client_auth_context = { type = "boolean", default = false } },
+          { log_level = {
+              type = "string",
+              required = false,
+              default = "error",
+              one_of = { "stderr", "emerg", "alert", "critical", "error", "warn", "notice", "info", "debug" },
+            }
+          },
+          { error_format = { type = "string", required = false, default = "default" } },
+          -- GraphQL operation types to include in outgoing JWT payload.
+          -- This value is configuration-driven and not sourced from introspection claims.
+          { approved_operation_types = {
+              type = "string",
+              required = false,
+              one_of = { "query", "mutation", "subscription" },
+            }
+          },
+          { add_headers = {
+              type = "map",
+              required = false,
+              default = {},
+              keys = { type = "string", len_min = 1, len_max = 200 },
+              values = { type = "string", len_min = 1, len_max = 1000 },
+            }
+          },
+          -- Vault reference or direct private key value used to sign JWT.
+          -- Example: {vault://aws/cfo/....../private_key}
+          { private_key = {
+              type = "string",
+              referenceable = true,
+              required = true,
+              description = "Private key reference/value for JWT signing (RS256/ES256).",
+            }
+          },
           -- Additional request headers to embed as JWT claims.
           -- "add": set only when target claim is empty.
           { additional_headers = {

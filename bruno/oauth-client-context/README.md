@@ -30,6 +30,7 @@ This collection is aligned with current `oauth-client-context` handler behavior.
   1. incoming JWT claims
   2. consumer `claim:*` tags fallback
   3. empty incoming values treated as missing
+- `approved_operation_types` is sourced from plugin configuration (not from incoming JWT/introspection payload).
 
 ## Environment
 Use `environments/local.bru`:

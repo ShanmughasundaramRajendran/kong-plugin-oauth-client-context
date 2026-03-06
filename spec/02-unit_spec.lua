@@ -221,9 +221,8 @@ describe("oauth-client-context handler (02 unit)", function()
 
   local function default_conf(overrides)
     local conf = {
-      enabled = true,
-      signing_key_vault_reference = "{vault://env/UNIT_PRIVATE_KEY}",
-      signing_key_secret_syntax_key = "private_key",
+      propagate_client_auth_context = true,
+      private_key = "{vault://env/UNIT_PRIVATE_KEY}",
       issuer = "unit-issuer",
       algorithm = "RS256",
       header_name = "x-client-auth-ctx",
@@ -247,17 +246,17 @@ describe("oauth-client-context handler (02 unit)", function()
     package.loaded["kong.plugins.oauth-client-context.handler"] = original_handler
   end)
 
-  it("short-circuits when plugin is disabled", function()
+  it("short-circuits when propagate_client_auth_context is false", function()
     local handler, state = load_handler()
-    handler:access(default_conf({ enabled = false }))
+    handler:access(default_conf({ propagate_client_auth_context = false }))
     assert.is_nil(next(state.service_headers))
     assert.is_nil(state.response_exit)
   end)
 
-  it("returns 500 when signing_key_vault_reference is missing", function()
+  it("returns 500 when private_key is missing", function()
     local handler, state = load_handler()
     local conf = default_conf()
-    conf.signing_key_vault_reference = nil
+    conf.private_key = nil
     handler:access(conf)
     assert.are.equal(500, state.response_exit.code)
     assert.are.equal("Invalid plugin configuration", state.response_exit.body.message)
@@ -291,12 +290,13 @@ describe("oauth-client-context handler (02 unit)", function()
     assert.are.equal("JWT signing failed", state.response_exit.body.message)
   end)
 
-  it("uses OIDC claims first, then consumer fallback, plus static and additional headers", function()
+  it("uses OIDC claims first, then consumer fallback, plus static/additional headers and config operation types", function()
     local handler, state = load_handler({
       request_headers = {
         ["X-Kong-Introspection-Response"] = build_oidc_introspection_payload({
           client_id = "oidc-client",
           grant_type = "client_credentials",
+          approved_operation_types = "subscription",
         }),
         ["x-consumer-extra-claim"] = "include-me",
         ["x-consumer-replace-claim"] = "replace-me",
@@ -320,8 +320,12 @@ describe("oauth-client-context handler (02 unit)", function()
     })
 
     handler:access(default_conf({
+      approved_operation_types = "query",
       additional_headers = {
         { header_name = "x-custom-add", claim_name = "custom_add_claim", mode = "add" },
+      },
+      add_headers = {
+        ["x-config-header-claim"] = "configured-default",
       },
     }))
 
@@ -333,7 +337,8 @@ describe("oauth-client-context handler (02 unit)", function()
     assert.are.equal("replace-me", payload.oauth_identity_type)
     assert.are.equal("include-me", payload.consumer_extra_claim)
     assert.are.equal("custom-add-value", payload.custom_add_claim)
-    assert.are.equal("query,mutation", payload.approved_operation_types)
+    assert.are.equal("query", payload.approved_operation_types)
+    assert.are.equal("configured-default", payload["x-config-header-claim"])
     assert.are.equal(1700000200, payload.iat)
     assert.are.equal(1700000260, payload.exp)
     assert.are.equal("unit-issuer", payload.iss)

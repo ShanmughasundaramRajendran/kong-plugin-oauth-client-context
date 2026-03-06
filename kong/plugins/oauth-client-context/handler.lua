@@ -30,7 +30,6 @@ local CLAIM_HEADERS = {
   "x-apigw-origin-client-id",
   "auth_identity_type",
   "oauth_identity_type",
-  "approved_operation_types",
 }
 
 local DEFAULT_INTROSPECTION_HEADER_NAME = "X-Kong-Introspection-Response"
@@ -56,10 +55,28 @@ local function get_first_header_value(value)
   return value
 end
 
+local function get_effective_enabled(conf)
+  return conf.propagate_client_auth_context == true
+end
+
+local function get_effective_algorithm(conf)
+  return conf.algorithm
+end
+
+local function get_effective_signing_key_reference(conf)
+  return conf.private_key
+end
+
 local function payload_set_value(payload, key, value)
   value = get_first_header_value(value)
   if is_non_empty(value) then
     payload[key] = value
+  end
+end
+
+local function payload_set_value_if_empty(payload, key, value)
+  if not is_non_empty(payload[key]) then
+    payload_set_value(payload, key, value)
   end
 end
 
@@ -109,13 +126,33 @@ local function apply_additional_headers(conf, payload)
   end
 end
 
-local function extract_secret_value(raw_secret, syntax_key)
+local function apply_add_headers_map(conf, payload)
+  if type(conf.add_headers) ~= "table" then
+    return
+  end
+
+  for header_name, configured_value in pairs(conf.add_headers) do
+    if is_non_empty(header_name) then
+      local request_value = get_first_header_value(kong.request.get_header(header_name))
+      local final_value = is_non_empty(request_value) and request_value or configured_value
+      payload_set_value(payload, header_name, final_value)
+    end
+  end
+end
+
+local function apply_request_header_claim_fallbacks(payload)
+  payload_set_value_if_empty(payload, "ssoid", kong.request.get_header("ssoid"))
+  payload_set_value_if_empty(payload, "oauth_identity_type", kong.request.get_header("x-oauth-identity-type"))
+  payload_set_value_if_empty(payload, "x-apigw-origin-client-id", kong.request.get_header("x-apigw-origin-client-id"))
+end
+
+local function extract_secret_value(raw_secret)
   if type(raw_secret) == "table" then
-    local val = raw_secret[syntax_key]
+    local val = raw_secret.private_key
     if is_non_empty(val) then
       return val
     end
-    return nil, "vault secret table missing key " .. tostring(syntax_key)
+    return nil, "vault secret table missing key private_key"
   end
 
   if type(raw_secret) == "string" then
@@ -125,53 +162,42 @@ local function extract_secret_value(raw_secret, syntax_key)
 
     local decoded = cjson.decode(raw_secret)
     if type(decoded) == "table" then
-      local val = decoded[syntax_key]
+      local val = decoded.private_key
       if is_non_empty(val) then
         return val
       end
-      return nil, "vault JSON secret missing key " .. tostring(syntax_key)
+      return nil, "vault JSON secret missing key private_key"
     end
 
-    -- Allow plain-string secrets even when syntax key is configured.
+    -- Allow plain-string private keys.
     return raw_secret
   end
 
-  return nil, "unsupported vault secret type for syntax key lookup"
+  return nil, "unsupported vault secret type for private_key lookup"
 end
 
-local function resolve_private_key_value(private_key_ref, syntax_key)
+local function resolve_private_key_value(private_key_ref)
   local ref = private_key_ref
   if not ref or ref == "" then
     return nil, "private key is empty"
   end
 
   if not ref:match("^%{vault://") then
-    if is_non_empty(syntax_key) then
-      local val, err = extract_secret_value(ref, syntax_key)
-      if val then
-        return val, nil
-      end
-      return nil, err
-    end
     return ref, nil
   end
 
   if kong.vault and type(kong.vault.get) == "function" then
     local ok, secret_or_err, maybe_err = pcall(kong.vault.get, ref)
     if ok and secret_or_err ~= nil then
-      if is_non_empty(syntax_key) then
-        local val, err = extract_secret_value(secret_or_err, syntax_key)
+      if type(secret_or_err) == "string" and secret_or_err ~= "" then
+        return secret_or_err, nil
+      end
+      if type(secret_or_err) == "table" then
+        local val, err = extract_secret_value(secret_or_err)
         if val then
           return val, nil
         end
         return nil, err
-      end
-
-      if type(secret_or_err) == "string" and secret_or_err ~= "" then
-        return secret_or_err, nil
-      end
-      if type(secret_or_err) == "table" and type(secret_or_err.private_key) == "string" and secret_or_err.private_key ~= "" then
-        return secret_or_err.private_key, nil
       end
     end
     if ok and maybe_err then
@@ -186,16 +212,15 @@ local function resolve_private_key_value(private_key_ref, syntax_key)
 end
 
 local function get_signing_key(conf)
-  local key_reference = conf.signing_key_vault_reference
-  local syntax_key = conf.signing_key_secret_syntax_key
-  local cache_key = conf.algorithm .. ":" .. tostring(key_reference) .. ":" .. tostring(syntax_key or "")
+  local key_reference = get_effective_signing_key_reference(conf)
+  local algorithm = get_effective_algorithm(conf)
+  local cache_key = algorithm .. ":" .. tostring(key_reference)
   local signing_key = parsed_key_cache:get(cache_key)
   if signing_key then
     return signing_key
   end
 
-  -- Signing key source is configured via vault reference.
-  local private_key, err = resolve_private_key_value(key_reference, syntax_key)
+  local private_key, err = resolve_private_key_value(key_reference)
   if not private_key then
     return nil, err
   end
@@ -242,7 +267,7 @@ local function build_token(signing_key, conf, payload)
   local header = {
     tv = 2,
     typ = "JWT",
-    alg = conf.algorithm,
+    alg = get_effective_algorithm(conf),
   }
 
   local header_json = cjson.encode(header)
@@ -259,7 +284,7 @@ local function build_token(signing_key, conf, payload)
 
   local signature
   local err
-  if conf.algorithm == ALGORITHMS.ES256 then
+  if get_effective_algorithm(conf) == ALGORITHMS.ES256 then
     signature, err = signing_key:sign(signing_input, "SHA256", nil, { ecdsa_use_raw = true })
   else
     local padding = signing_key.PADDINGS and signing_key.PADDINGS.RSA_PKCS1_PADDING or nil
@@ -297,7 +322,13 @@ local function build_payload(conf)
 
   payload_set_value(payload, INCLUDE_CLAIM, kong.request.get_header(INCLUDE_HEADER))
   payload_set_value(payload, REPLACE_TARGET_CLAIM, kong.request.get_header(REPLACE_HEADER))
+  apply_request_header_claim_fallbacks(payload)
+  apply_add_headers_map(conf, payload)
   apply_additional_headers(conf, payload)
+
+  if is_non_empty(conf.approved_operation_types) then
+    payload.approved_operation_types = conf.approved_operation_types
+  end
 
   if conf.ttl then
     payload.exp = now + conf.ttl
@@ -312,13 +343,6 @@ local function build_payload(conf)
   return payload
 end
 
--- rewrite phase:
--- Runs early in the request lifecycle (before routing and access control).
--- This plugin does not mutate request state at this stage.
-function OAuthClientContext:rewrite(_conf)
-  return
-end
-
 -- access phase:
 -- Runs after routing/auth and before proxying upstream.
 -- The plugin builds and signs the client context JWT and injects it as a header.
@@ -329,7 +353,7 @@ function OAuthClientContext:access(conf)
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
-  if conf.enabled == false then
+  if not get_effective_enabled(conf) then
     return
   end
 
@@ -338,13 +362,15 @@ function OAuthClientContext:access(conf)
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
-  if conf.algorithm ~= ALGORITHMS.RS256 and conf.algorithm ~= ALGORITHMS.ES256 then
-    kong.log.err("[oauth-client-context] unsupported algorithm: ", tostring(conf.algorithm))
+  local algorithm = get_effective_algorithm(conf)
+  if algorithm ~= ALGORITHMS.RS256 and algorithm ~= ALGORITHMS.ES256 then
+    kong.log.err("[oauth-client-context] unsupported algorithm: ", tostring(algorithm))
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
-  if not is_non_empty(conf.signing_key_vault_reference) then
-    kong.log.err("[oauth-client-context] signing_key_vault_reference must be configured")
+  local key_reference = get_effective_signing_key_reference(conf)
+  if not is_non_empty(key_reference) then
+    kong.log.err("[oauth-client-context] private_key must be configured")
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 

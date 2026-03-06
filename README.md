@@ -17,9 +17,10 @@ This POC supports both signing algorithms required by the customer:
 - Pongo test suites cover schema, unit, and integration behavior.
 
 ## Configuration
-- `enabled` (optional): enable/disable plugin execution (default `true`).
-- `signing_key_vault_reference` (required): signing key source (vault reference recommended, example: `{vault://env/LOCAL_TEST_RS_PRIVATE_KEY}`).
-- `signing_key_secret_syntax_key` (optional): key name to extract when vault returns JSON/table (default `private_key`).
+- `propagate_client_auth_context` (optional): additional enable flag (default `false`).
+- `private_key` (required, referenceable): signing key reference/value (vault reference recommended, example: `{vault://aws/oauth-client-context/test-rs/private_key}`).
+- `approved_operation_types` (optional): GraphQL operation type to embed into JWT (`query`, `mutation`, `subscription`).
+- `add_headers` (optional): key/value map of additional headers to embed; request header value is preferred over configured default.
 - `additional_headers` (optional): array of request-header to JWT-claim mappings:
   - `header_name`
   - `claim_name`
@@ -30,13 +31,18 @@ This POC supports both signing algorithms required by the customer:
 - `ttl` (optional): defaults to `60`, valid range `1..86400`.
 
 ## Signing Key Resolution
-- The plugin resolves signing key using `algorithm` + `signing_key_vault_reference`.
-- `signing_key_vault_reference` may point to Kong vault sources (recommended) or direct PEM values.
-- `signing_key_secret_syntax_key` is used when secret is JSON/table.
+- The plugin resolves signing key using `algorithm` + `private_key`.
+- `private_key` should point to Kong AWS vault references for production usage.
+- Recommended pattern: `{vault://aws/<secret-id>/<json-key>}` where `<json-key>` is typically `private_key`.
 - Kong resolves the vault reference before plugin execution.
 - Parsed signing keys are cached in-plugin by `algorithm:key_reference` for 10 minutes (`600` seconds).
 - Generated JWT header includes static `tv: 2`.
-- Local compose provides dedicated vault env keys per algorithm:
+- Local compose enables `aws` vault backend (and `env` fallback). Configure:
+  - `KONG_AWS_REGION`
+  - `AWS_ACCESS_KEY_ID`
+  - `AWS_SECRET_ACCESS_KEY`
+  - optional `KONG_AWS_SM_ENDPOINT` (for localstack/non-prod endpoint override)
+- Legacy local env vault keys (fallback only):
   - `OAUTH_CTX_RS256_SIGNING_KEY`
   - `OAUTH_CTX_ES256_SIGNING_KEY`
 
@@ -57,7 +63,7 @@ Supported claims:
 - `x-apigw-origin-client-id`
 - `auth_identity_type`
 - `oauth_identity_type`
-- `approved_operation_types`
+- `approved_operation_types` (from plugin config, not from introspection or tags)
 
 Note: Kong tags do not allow literal commas, so use URL-encoded values in tags when needed (example: `query%2Cmutation`).
 
@@ -154,8 +160,8 @@ Pass criteria: both lines are present in `config/kong.yml`.
   - `/orders/rs` (`RS256`) and `/orders/es` (`ES256`)
 - All routes have `key-auth` enabled (`apikey` header).
 - Claims are resolved dynamically per authenticated consumer from that consumer's `claim:*` tags.
-- All route plugin configs use Kong Vault `env` references for signing keys.
-- Docker compose enables Kong Vault provider with `KONG_VAULTS=env`.
+- All route plugin configs use Kong Vault `aws` references for signing keys.
+- Docker compose enables Kong Vault providers with `KONG_VAULTS=aws,env` (`env` kept as fallback for local testing).
 
 ## Mac Terminal Runbook (Consolidated Commands)
 ```bash

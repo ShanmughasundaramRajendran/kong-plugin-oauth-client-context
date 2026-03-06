@@ -40,10 +40,11 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
       name = "oauth-client-context",
       route = { id = rs_route.id },
       config = {
-        signing_key_vault_reference = rsa_private_key,
-        signing_key_secret_syntax_key = "private_key",
+        propagate_client_auth_context = true,
+        private_key = rsa_private_key,
         issuer = "kong-gateway",
         algorithm = "RS256",
+        approved_operation_types = "query",
         header_name = "x-client-auth-ctx",
       }
     })
@@ -52,10 +53,11 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
       name = "oauth-client-context",
       route = { id = es_route.id },
       config = {
-        signing_key_vault_reference = ec_private_key,
-        signing_key_secret_syntax_key = "private_key",
+        propagate_client_auth_context = true,
+        private_key = ec_private_key,
         issuer = "kong-gateway",
         algorithm = "ES256",
+        approved_operation_types = "subscription",
         header_name = "x-client-auth-ctx",
       }
     })
@@ -91,7 +93,6 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
       ["x-apigw-origin-client-id"] = "oidc-origin-333",
       oauth_identity_type = "oidc-from-introspection",
       auth_identity_type = "auth-from-introspection",
-      approved_operation_types = "query,mutation",
     }
 
     if type(overrides) == "table" then
@@ -166,6 +167,7 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
     assert.are.equal("oidc-client-123", payload.client_id)
     assert.are.equal("oidc-app-456", payload.app_id)
     assert.are.equal("kong-gateway", payload.iss)
+    assert.are.equal("query", payload.approved_operation_types)
     assert.is_nil(payload.sub)
   end)
 
@@ -181,6 +183,7 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
     local payload = decode_jwt_payload(body.headers["X-Client-Auth-Ctx"])
     assert.are.equal("oidc-client-123", payload.client_id)
     assert.are.equal("kong-gateway", payload.iss)
+    assert.are.equal("subscription", payload.approved_operation_types)
     assert.is_nil(payload.sub)
   end)
 
