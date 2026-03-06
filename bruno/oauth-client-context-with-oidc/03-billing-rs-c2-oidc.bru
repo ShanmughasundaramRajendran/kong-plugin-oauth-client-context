@@ -1,0 +1,17 @@
+meta {
+  name: Billing RS256 C2 OIDC
+  type: http
+  seq: 3
+}
+
+get {
+  url: {{base_url}}/billing/rs
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  apikey: {{apikey_c2}}
+  X-Kong-Introspection-Response: {{oidc_introspection_response_b64}}
+}

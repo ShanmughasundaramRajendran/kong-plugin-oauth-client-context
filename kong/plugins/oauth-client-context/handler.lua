@@ -1,5 +1,4 @@
 local cjson = require "cjson.safe"
-local jwt_parser = require "kong.plugins.jwt.jwt_parser"
 local lrucache = require "resty.lrucache"
 local pkey = require "resty.openssl.pkey"
 
@@ -13,7 +12,8 @@ local ngx_unescape_uri = ngx.unescape_uri
 local ngx_time = ngx.time
 
 local OAuthClientContext = {
-  PRIORITY = 900,
+  -- Keep this below OIDC so introspection-derived headers are available first.
+  PRIORITY = 800,
   VERSION = "2.0.0",
 }
 
@@ -33,6 +33,7 @@ local CLAIM_HEADERS = {
   "approved_operation_types",
 }
 
+local DEFAULT_INTROSPECTION_HEADER_NAME = "X-Kong-Introspection-Response"
 local INCLUDE_HEADER = "x-consumer-extra-claim"
 local REPLACE_HEADER = "x-consumer-replace-claim"
 local INCLUDE_CLAIM = "consumer_extra_claim"
@@ -62,83 +63,116 @@ local function payload_set_value(payload, key, value)
   end
 end
 
-local function extract_bearer_token(raw_header)
-  local header = get_first_header_value(raw_header)
-  if not is_non_empty(header) then
+local function decode_base64(data)
+  if type(data) ~= "string" or data == "" then
     return nil
   end
 
-  local bearer = header:match("^[Bb]earer%s+(.+)$")
-  if bearer and bearer ~= "" then
-    return bearer
-  end
-
-  return header
+  return ngx_decode_base64(data)
 end
 
-local function decode_claims_from_token_payload(token)
-  local payload_segment = token:match("^[^.]+%.([^.]+)")
-  if not payload_segment then
+local function get_oidc_introspection_claims()
+  local encoded = get_first_header_value(kong.request.get_header(DEFAULT_INTROSPECTION_HEADER_NAME))
+  if not is_non_empty(encoded) then
     return {}
   end
 
-  local base64 = payload_segment:gsub("-", "+"):gsub("_", "/")
-  local remainder = #base64 % 4
-  if remainder == 2 then
-    base64 = base64 .. "=="
-  elseif remainder == 3 then
-    base64 = base64 .. "="
-  elseif remainder ~= 0 then
+  local decoded_json = decode_base64(encoded)
+  if not decoded_json then
+    kong.log.debug("[oauth-client-context] failed to decode OIDC introspection header: ", DEFAULT_INTROSPECTION_HEADER_NAME)
     return {}
   end
 
-  local decoded_payload = ngx_decode_base64(base64)
-  if not decoded_payload then
-    return {}
-  end
-
-  local claims = cjson.decode(decoded_payload)
+  local claims = cjson.decode(decoded_json)
   if type(claims) ~= "table" then
+    kong.log.debug("[oauth-client-context] failed to parse OIDC introspection JSON from header: ", DEFAULT_INTROSPECTION_HEADER_NAME)
     return {}
   end
 
   return claims
 end
 
-local function get_incoming_jwt_claims(conf)
-  local header_name = conf.incoming_jwt_header or "authorization"
-  local token = extract_bearer_token(kong.request.get_header(header_name))
-  if not token then
-    return {}
+local function apply_additional_headers(conf, payload)
+  if type(conf.additional_headers) ~= "table" then
+    return
   end
 
-  local jwt, err = jwt_parser:new(token)
-  if not jwt then
-    kong.log.debug("[oauth-client-context] unable to parse incoming JWT from header ", header_name, ": ", err)
-    return decode_claims_from_token_payload(token)
+  for _, mapping in ipairs(conf.additional_headers) do
+    local header_name = mapping and mapping.header_name
+    local claim_name = mapping and mapping.claim_name
+    if is_non_empty(header_name) and is_non_empty(claim_name) then
+      local value = get_first_header_value(kong.request.get_header(header_name))
+      if is_non_empty(value) and not is_non_empty(payload[claim_name]) then
+        payload[claim_name] = value
+      end
+    end
   end
-
-  if type(jwt.claims) == "table" then
-    return jwt.claims
-  end
-
-  return decode_claims_from_token_payload(token)
 end
 
-local function resolve_private_key_value(private_key_ref)
+local function extract_secret_value(raw_secret, syntax_key)
+  if type(raw_secret) == "table" then
+    local val = raw_secret[syntax_key]
+    if is_non_empty(val) then
+      return val
+    end
+    return nil, "vault secret table missing key " .. tostring(syntax_key)
+  end
+
+  if type(raw_secret) == "string" then
+    if raw_secret == "" then
+      return nil, "vault secret is empty"
+    end
+
+    local decoded = cjson.decode(raw_secret)
+    if type(decoded) == "table" then
+      local val = decoded[syntax_key]
+      if is_non_empty(val) then
+        return val
+      end
+      return nil, "vault JSON secret missing key " .. tostring(syntax_key)
+    end
+
+    -- Allow plain-string secrets even when syntax key is configured.
+    return raw_secret
+  end
+
+  return nil, "unsupported vault secret type for syntax key lookup"
+end
+
+local function resolve_private_key_value(private_key_ref, syntax_key)
   local ref = private_key_ref
   if not ref or ref == "" then
     return nil, "private key is empty"
   end
 
   if not ref:match("^%{vault://") then
+    if is_non_empty(syntax_key) then
+      local val, err = extract_secret_value(ref, syntax_key)
+      if val then
+        return val, nil
+      end
+      return nil, err
+    end
     return ref, nil
   end
 
   if kong.vault and type(kong.vault.get) == "function" then
     local ok, secret_or_err, maybe_err = pcall(kong.vault.get, ref)
-    if ok and type(secret_or_err) == "string" and secret_or_err ~= "" then
-      return secret_or_err, nil
+    if ok and secret_or_err ~= nil then
+      if is_non_empty(syntax_key) then
+        local val, err = extract_secret_value(secret_or_err, syntax_key)
+        if val then
+          return val, nil
+        end
+        return nil, err
+      end
+
+      if type(secret_or_err) == "string" and secret_or_err ~= "" then
+        return secret_or_err, nil
+      end
+      if type(secret_or_err) == "table" and type(secret_or_err.private_key) == "string" and secret_or_err.private_key ~= "" then
+        return secret_or_err.private_key, nil
+      end
     end
     if ok and maybe_err then
       kong.log.err("[oauth-client-context] kong.vault.get failed for reference ", ref, ": ", maybe_err)
@@ -152,14 +186,16 @@ local function resolve_private_key_value(private_key_ref)
 end
 
 local function get_signing_key(conf)
-  local cache_key = conf.algorithm .. ":" .. conf.key_id .. ":" .. conf.private_key
+  local key_reference = conf.signing_key_vault_reference
+  local syntax_key = conf.signing_key_secret_syntax_key
+  local cache_key = conf.algorithm .. ":" .. tostring(key_reference) .. ":" .. tostring(syntax_key or "")
   local signing_key = parsed_key_cache:get(cache_key)
   if signing_key then
     return signing_key
   end
 
-  -- `private_key` can be a raw PEM value or a Kong Vault reference.
-  local private_key, err = resolve_private_key_value(conf.private_key)
+  -- Signing key source is configured via vault reference.
+  local private_key, err = resolve_private_key_value(key_reference, syntax_key)
   if not private_key then
     return nil, err
   end
@@ -207,7 +243,6 @@ local function build_token(signing_key, conf, payload)
     tv = 2,
     typ = "JWT",
     alg = conf.algorithm,
-    kid = conf.key_id,
   }
 
   local header_json = cjson.encode(header)
@@ -244,15 +279,15 @@ local function build_payload(conf)
     iat = now,
   }
 
-  local incoming_claims = get_incoming_jwt_claims(conf)
+  local oidc_claims = get_oidc_introspection_claims()
   local consumer = kong.client.get_consumer()
   local consumer_claims = parse_consumer_claims(consumer)
 
   -- Claim precedence:
-  -- 1) Incoming JWT claims
+  -- 1) OIDC introspection claims (when present)
   -- 2) Consumer tag claims (fallback)
   for _, claim in ipairs(CLAIM_HEADERS) do
-    local value = incoming_claims[claim]
+    local value = oidc_claims[claim]
     if is_non_empty(value) then
       payload_set_value(payload, claim, value)
     else
@@ -261,8 +296,8 @@ local function build_payload(conf)
   end
 
   payload_set_value(payload, INCLUDE_CLAIM, kong.request.get_header(INCLUDE_HEADER))
-
   payload_set_value(payload, REPLACE_TARGET_CLAIM, kong.request.get_header(REPLACE_HEADER))
+  apply_additional_headers(conf, payload)
 
   if conf.ttl then
     payload.exp = now + conf.ttl
@@ -272,9 +307,7 @@ local function build_payload(conf)
     payload_set_value(payload, "client_id", consumer_claims.client_id or consumer.custom_id or consumer.username or consumer.id)
   end
 
-  payload_set_value(payload, "sub", conf.subject or payload.client_id)
   payload_set_value(payload, "iss", conf.issuer or kong.request.get_host())
-  payload_set_value(payload, "aud", conf.audience or kong.request.get_host())
 
   return payload
 end
@@ -310,18 +343,17 @@ function OAuthClientContext:access(conf)
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
-  if not is_non_empty(conf.key_id) or not is_non_empty(conf.private_key) then
-    kong.log.err("[oauth-client-context] key_id/private_key must be configured")
+  if not is_non_empty(conf.signing_key_vault_reference) then
+    kong.log.err("[oauth-client-context] signing_key_vault_reference must be configured")
     return kong.response.exit(500, { message = "Invalid plugin configuration" })
   end
 
+  local payload = build_payload(conf)
   local signing_key, err = get_signing_key(conf)
   if not signing_key then
     kong.log.err("[oauth-client-context] invalid private key: ", err)
     return kong.response.exit(500, { message = "Invalid private key" })
   end
-
-  local payload = build_payload(conf)
 
   local token
   token, err = build_token(signing_key, conf, payload)

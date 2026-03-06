@@ -11,15 +11,27 @@ return {
         type = "record",
         fields = {
           { enabled = { type = "boolean", default = true } },
-          -- JWT header `kid` value used by upstream verifiers.
-          { key_id = { type = "string", required = true } },
-          -- PEM private key or Kong Vault reference (for example: {vault://...}).
-          { private_key = { type = "string", required = true } },
-          -- Header that carries the incoming JWT used as claim source.
-          { incoming_jwt_header = { type = "string", required = false, default = "authorization" } },
-          { subject = { type = "string", required = false } },
+          -- Kong vault reference for signing key (example: {vault://env/LOCAL_TEST_RS_PRIVATE_KEY}).
+          { signing_key_vault_reference = { type = "string", required = true } },
+          -- Optional syntax key used when the resolved vault secret is table/json.
+          { signing_key_secret_syntax_key = { type = "string", required = false, default = "private_key" } },
+          -- Additional request headers to embed as JWT claims.
+          -- "add": set only when target claim is empty.
+          { additional_headers = {
+              type = "array",
+              required = false,
+              default = {},
+              elements = {
+                type = "record",
+                fields = {
+                  { header_name = { type = "string", required = true } },
+                  { claim_name = { type = "string", required = true } },
+                  { mode = { type = "string", required = false, default = "add", one_of = { "add" } } },
+                },
+              },
+            }
+          },
           { issuer = { type = "string", required = false } },
-          { audience = { type = "string", required = false } },
           { algorithm = { 
               type = "string", 
               default = "RS256",

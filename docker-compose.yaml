@@ -52,6 +52,7 @@ services:
         7eveJSsCfcR9t0eqd9PHYpCdHPI2i+4kKSxkcvxUqkaPXR4x+vk6jK34/dbrePMM
         jnOmBD3+NgzJShVMu6Gihw==
         -----END PRIVATE KEY-----
+      OAUTH_CTX_RS256_SIGNING_KEY: *rs_private_key
       BILLING_RS_PRIVATE_KEY: *rs_private_key
       ORDERS_RS_PRIVATE_KEY: *rs_private_key
       LOCAL_TEST_ES_PRIVATE_KEY: &es_private_key |
@@ -60,6 +61,7 @@ services:
         AwEHoUQDQgAEe1+eiBvr/R3Brd1GLbOn0bZdQW1nfgf6Jry93y6+lqZPBD25AsZf
         snohLGEdZhzcduSzxtQK6IHlPyfg+3F0kg==
         -----END EC PRIVATE KEY-----
+      OAUTH_CTX_ES256_SIGNING_KEY: *es_private_key
       BILLING_ES_PRIVATE_KEY: *es_private_key
       ORDERS_ES_PRIVATE_KEY: *es_private_key
 

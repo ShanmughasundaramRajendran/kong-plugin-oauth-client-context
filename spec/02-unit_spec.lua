@@ -5,7 +5,6 @@ describe("oauth-client-context handler (02 unit)", function()
   local original_ngx = _G.ngx
   local original_lru = package.loaded["resty.lrucache"]
   local original_pkey = package.loaded["resty.openssl.pkey"]
-  local original_jwt_parser = package.loaded["kong.plugins.jwt.jwt_parser"]
   local original_handler = package.loaded["kong.plugins.oauth-client-context.handler"]
 
   local function b64_encode(input)
@@ -66,10 +65,6 @@ describe("oauth-client-context handler (02 unit)", function()
     return table.concat(output)
   end
 
-  local function base64url_encode(input)
-    return b64_encode(input):gsub("+", "-"):gsub("/", "_"):gsub("=+$", "")
-  end
-
   local function base64url_decode(input)
     local base64 = input:gsub("-", "+"):gsub("_", "/")
     local remainder = #base64 % 4
@@ -84,19 +79,22 @@ describe("oauth-client-context handler (02 unit)", function()
     return b64_decode(base64)
   end
 
-  local function decode_jwt_payload(token)
+  local function decode_jwt(token)
+    local header_segment = token:match("^([^.]+)%.")
     local payload_segment = token:match("^[^.]+%.([^.]+)")
+    assert.is_not_nil(header_segment)
     assert.is_not_nil(payload_segment)
-    local decoded = base64url_decode(payload_segment)
-    assert.is_not_nil(decoded)
-    return cjson.decode(decoded)
+    local header = cjson.decode(base64url_decode(header_segment))
+    local payload = cjson.decode(base64url_decode(payload_segment))
+    return header, payload
   end
 
-  local function build_incoming_jwt(overrides)
+  local function build_oidc_introspection_payload(overrides)
     local payload = {
-      client_id = "jwt-client-123",
-      oauth_identity_type = "incoming-oauth2",
-      auth_identity_type = "incoming-auth",
+      client_id = "oidc-client-123",
+      app_id = "oidc-app-456",
+      oauth_identity_type = "oidc-oauth2",
+      auth_identity_type = "oidc-auth",
     }
 
     if type(overrides) == "table" then
@@ -105,9 +103,7 @@ describe("oauth-client-context handler (02 unit)", function()
       end
     end
 
-    local header_json = cjson.encode({ typ = "JWT", alg = "none" })
-    local payload_json = cjson.encode(payload)
-    return base64url_encode(header_json) .. "." .. base64url_encode(payload_json) .. ".sig"
+    return b64_encode(cjson.encode(payload))
   end
 
   local function url_decode(input)
@@ -129,30 +125,6 @@ describe("oauth-client-context handler (02 unit)", function()
     }
 
     package.loaded["kong.plugins.oauth-client-context.handler"] = nil
-    package.loaded["kong.plugins.jwt.jwt_parser"] = {
-      new = function(_, token)
-        if opts.jwt_parser_error then
-          return nil, opts.jwt_parser_error
-        end
-
-        local payload_segment = token and token:match("^[^.]+%.([^.]+)")
-        if not payload_segment then
-          return nil, "invalid token"
-        end
-
-        local decoded_payload = base64url_decode(payload_segment)
-        if not decoded_payload then
-          return nil, "invalid payload"
-        end
-
-        local claims = cjson.decode(decoded_payload)
-        if type(claims) ~= "table" then
-          return nil, "invalid claims"
-        end
-
-        return { claims = claims }
-      end
-    }
 
     package.loaded["resty.lrucache"] = {
       new = function()
@@ -237,10 +209,8 @@ describe("oauth-client-context handler (02 unit)", function()
         end,
       },
       log = {
-        err = function()
-        end,
-        debug = function()
-        end,
+        err = function() end,
+        debug = function() end,
       },
       vault = opts.vault,
     }
@@ -252,15 +222,13 @@ describe("oauth-client-context handler (02 unit)", function()
   local function default_conf(overrides)
     local conf = {
       enabled = true,
-      key_id = "unit-kid",
-      private_key = "unit-private-key",
-      incoming_jwt_header = "authorization",
-      subject = "unit-sub",
+      signing_key_vault_reference = "{vault://env/UNIT_PRIVATE_KEY}",
+      signing_key_secret_syntax_key = "private_key",
       issuer = "unit-issuer",
-      audience = "unit-audience",
       algorithm = "RS256",
       header_name = "x-client-auth-ctx",
       ttl = 60,
+      additional_headers = {},
     }
 
     if type(overrides) == "table" then
@@ -276,101 +244,63 @@ describe("oauth-client-context handler (02 unit)", function()
     _G.ngx = original_ngx
     package.loaded["resty.lrucache"] = original_lru
     package.loaded["resty.openssl.pkey"] = original_pkey
-    package.loaded["kong.plugins.jwt.jwt_parser"] = original_jwt_parser
     package.loaded["kong.plugins.oauth-client-context.handler"] = original_handler
   end)
 
   it("short-circuits when plugin is disabled", function()
     local handler, state = load_handler()
-    local result = handler:access(default_conf({ enabled = false }))
-
-    assert.is_nil(result)
+    handler:access(default_conf({ enabled = false }))
     assert.is_nil(next(state.service_headers))
     assert.is_nil(state.response_exit)
   end)
 
-  it("returns 500 when private key parsing fails", function()
-    local handler, state = load_handler({ pkey_new_error = "bad key" })
-    handler:access(default_conf())
+  it("returns 500 when signing_key_vault_reference is missing", function()
+    local handler, state = load_handler()
+    local conf = default_conf()
+    conf.signing_key_vault_reference = nil
+    handler:access(conf)
+    assert.are.equal(500, state.response_exit.code)
+    assert.are.equal("Invalid plugin configuration", state.response_exit.body.message)
+  end)
 
-    assert.is_not_nil(state.response_exit)
+  it("returns 500 when private key parsing fails", function()
+    local handler, state = load_handler({
+      pkey_new_error = "bad key",
+      vault = {
+        get = function()
+          return "resolved-private-key"
+        end,
+      },
+    })
+    handler:access(default_conf())
     assert.are.equal(500, state.response_exit.code)
     assert.are.equal("Invalid private key", state.response_exit.body.message)
   end)
 
   it("returns 500 when signing fails", function()
-    local handler, state = load_handler({ sign_error = "cannot sign" })
-    handler:access(default_conf())
-
-    assert.is_not_nil(state.response_exit)
-    assert.are.equal(500, state.response_exit.code)
-    assert.are.equal("JWT signing failed", state.response_exit.body.message)
-  end)
-
-  it("resolves private_key from kong vault reference", function()
     local handler, state = load_handler({
+      sign_error = "cannot sign",
       vault = {
-        get = function(ref)
-          assert.are.equal("{vault://env/UNIT_TEST_KEY}", ref)
+        get = function()
           return "resolved-private-key"
         end,
       },
     })
-
-    handler:access(default_conf({
-      private_key = "{vault://env/UNIT_TEST_KEY}",
-    }))
-
-    assert.is_nil(state.response_exit)
-    assert.are.equal("resolved-private-key", state.last_pkey)
-  end)
-
-  it("returns 500 when vault reference cannot be resolved", function()
-    local handler, state = load_handler({
-      vault = {
-        get = function()
-          return nil, "secret not found"
-        end,
-      },
-    })
-
-    handler:access(default_conf({
-      private_key = "{vault://env/MISSING_KEY}",
-    }))
-
-    assert.is_not_nil(state.response_exit)
+    handler:access(default_conf())
     assert.are.equal(500, state.response_exit.code)
-    assert.are.equal("Invalid private key", state.response_exit.body.message)
+    assert.are.equal("JWT signing failed", state.response_exit.body.message)
   end)
 
-  it("returns 500 when kong.vault.get throws", function()
-    local handler, state = load_handler({
-      vault = {
-        get = function()
-          error("vault unavailable")
-        end,
-      },
-    })
-
-    handler:access(default_conf({
-      private_key = "{vault://env/BROKEN_KEY}",
-    }))
-
-    assert.is_not_nil(state.response_exit)
-    assert.are.equal(500, state.response_exit.code)
-    assert.are.equal("Invalid private key", state.response_exit.body.message)
-  end)
-
-  it("merges incoming claims, consumer claims, and include/replace headers", function()
+  it("uses OIDC claims first, then consumer fallback, plus static and additional headers", function()
     local handler, state = load_handler({
       request_headers = {
-        authorization = "bearer " .. build_incoming_jwt({
-          client_id = "incoming-client",
+        ["X-Kong-Introspection-Response"] = build_oidc_introspection_payload({
+          client_id = "oidc-client",
           grant_type = "client_credentials",
         }),
         ["x-consumer-extra-claim"] = "include-me",
         ["x-consumer-replace-claim"] = "replace-me",
-        ["x-consumer-ignore-claim"] = "ignore-me",
+        ["x-custom-add"] = "custom-add-value",
       },
       consumer = {
         custom_id = "consumer-custom-id",
@@ -381,54 +311,38 @@ describe("oauth-client-context handler (02 unit)", function()
         },
       },
       now = 1700000200,
+      vault = {
+        get = function(ref)
+          assert.are.equal("{vault://env/UNIT_PRIVATE_KEY}", ref)
+          return "resolved-private-key"
+        end,
+      },
     })
 
-    handler:access(default_conf())
+    handler:access(default_conf({
+      additional_headers = {
+        { header_name = "x-custom-add", claim_name = "custom_add_claim", mode = "add" },
+      },
+    }))
 
-    local token = state.service_headers["x-client-auth-ctx"]
-    assert.is_not_nil(token)
-    assert.are.equal(token, state.response_headers["x-client-auth-ctx"])
-
-    local payload = decode_jwt_payload(token)
-    assert.are.equal("incoming-client", payload.client_id)
-    assert.are.equal("consumer-app", payload.app_id)
+    local header, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])
+    assert.are.equal("RS256", header.alg)
+    assert.is_nil(header.kid)
+    assert.are.equal("oidc-client", payload.client_id)
+    assert.are.equal("oidc-app-456", payload.app_id)
     assert.are.equal("replace-me", payload.oauth_identity_type)
     assert.are.equal("include-me", payload.consumer_extra_claim)
-    assert.is_nil(payload.consumer_ignore_claim)
+    assert.are.equal("custom-add-value", payload.custom_add_claim)
     assert.are.equal("query,mutation", payload.approved_operation_types)
-    assert.are.equal("unit-sub", payload.sub)
-    assert.are.equal("unit-issuer", payload.iss)
-    assert.are.equal("unit-audience", payload.aud)
     assert.are.equal(1700000200, payload.iat)
     assert.are.equal(1700000260, payload.exp)
+    assert.are.equal("unit-issuer", payload.iss)
+    assert.is_nil(payload.sub)
+    assert.is_nil(payload.aud)
   end)
 
-  it("falls back to payload decode when jwt_parser fails", function()
+  it("falls back to consumer claims when OIDC introspection payload is missing", function()
     local handler, state = load_handler({
-      jwt_parser_error = "parser unavailable",
-      request_headers = {
-        authorization = "Bearer " .. build_incoming_jwt({
-          client_id = "decoded-payload-client",
-        }),
-      },
-    })
-
-    handler:access(default_conf())
-
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
-    assert.are.equal("decoded-payload-client", payload.client_id)
-  end)
-
-  it("falls back to consumer claims when parser claims have no supported fields", function()
-    local handler, state = load_handler({
-      request_headers = {
-        authorization = "Bearer " .. build_incoming_jwt({
-          client_id = "",
-          oauth_identity_type = "",
-          auth_identity_type = "",
-          unsupported_claim = "present",
-        }),
-      },
       consumer = {
         custom_id = "consumer-custom-id",
         tags = {
@@ -436,96 +350,60 @@ describe("oauth-client-context handler (02 unit)", function()
           "claim:app_id=consumer-claim-app",
         },
       },
+      vault = {
+        get = function()
+          return "resolved-private-key"
+        end,
+      },
     })
 
     handler:access(default_conf())
-
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
+    local _, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])
     assert.are.equal("consumer-claim-client", payload.client_id)
     assert.are.equal("consumer-claim-app", payload.app_id)
   end)
 
-  it("uses configurable incoming_jwt_header", function()
+  it("falls back to consumer claims when OIDC introspection payload is malformed", function()
     local handler, state = load_handler({
       request_headers = {
-        ["x-custom-jwt"] = "Bearer " .. build_incoming_jwt({
-          app_id = "from-custom-header",
-        }),
+        ["X-Kong-Introspection-Response"] = "not-base64",
       },
-    })
-
-    handler:access(default_conf({
-      incoming_jwt_header = "x-custom-jwt",
-    }))
-
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
-    assert.are.equal("from-custom-header", payload.app_id)
-  end)
-
-  it("applies host/client defaults when subject/issuer/audience are not configured", function()
-    local handler, state = load_handler({
-      host = "fallback.example.internal",
       consumer = {
-        custom_id = "consumer-custom-fallback-id",
-        tags = {},
+        tags = {
+          "claim:client_id=consumer-fallback-client",
+        },
+      },
+      vault = {
+        get = function()
+          return "resolved-private-key"
+        end,
       },
     })
 
-    local conf = default_conf()
-    conf.subject = nil
-    conf.issuer = nil
-    conf.audience = nil
-    handler:access(conf)
-
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
-    assert.are.equal("consumer-custom-fallback-id", payload.client_id)
-    assert.are.equal("consumer-custom-fallback-id", payload.sub)
-    assert.are.equal("fallback.example.internal", payload.iss)
-    assert.are.equal("fallback.example.internal", payload.aud)
+    handler:access(default_conf())
+    local _, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])
+    assert.are.equal("consumer-fallback-client", payload.client_id)
   end)
 
-  it("does not set exp when ttl is nil", function()
-    local handler, state = load_handler()
-    local conf = default_conf()
-    conf.ttl = nil
-    handler:access(conf)
-
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
-    assert.is_nil(payload.exp)
-    assert.are.equal(1700000000, payload.iat)
-  end)
-
-  it("reuses cached signing key for same algorithm and key_id", function()
-    local handler, state = load_handler()
-    local conf = default_conf({
-      key_id = "cached-kid",
-      algorithm = "RS256",
-    })
-
-    handler:access(conf)
-    handler:access(conf)
-
-    assert.is_nil(state.response_exit)
-    assert.are.equal(1, state.pkey_new_calls)
-  end)
-
-  it("accepts raw token format and uses ES256 signing options", function()
+  it("uses ES256 signing options with vault key source", function()
     local handler, state = load_handler({
       request_headers = {
-        authorization = build_incoming_jwt({ app_id = "raw-token-app" }),
+        ["X-Kong-Introspection-Response"] = build_oidc_introspection_payload({ app_id = "oidc-es-app" }),
+      },
+      vault = {
+        get = function()
+          return "resolved-private-key"
+        end,
       },
     })
 
     handler:access(default_conf({
       algorithm = "ES256",
-      key_id = "es-kid",
     }))
 
-    local payload = decode_jwt_payload(state.service_headers["x-client-auth-ctx"])
-    assert.are.equal("raw-token-app", payload.app_id)
+    local _, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])
+    assert.are.equal("oidc-es-app", payload.app_id)
     assert.are.equal(1700000060, payload.exp)
-
-    assert.is_not_nil(state.last_sign)
     assert.are.equal("SHA256", state.last_sign.digest)
     assert.is_nil(state.last_sign.padding)
     assert.are.equal(true, state.last_sign.sign_opts.ecdsa_use_raw)

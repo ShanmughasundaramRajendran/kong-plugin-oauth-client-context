@@ -62,14 +62,16 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "local-test-rs"
-              subject: "rs-client"
               issuer: "kong-gateway"
-              audience: "upstream-rs"
               algorithm: RS256
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://env/LOCAL_TEST_RS_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_RS256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key
+              additional_headers:
+                - header_name: x-extra-claim
+                  claim_name: extra_claim
+                  mode: add
       - name: test-route-es
         paths:
           - /test-es
@@ -81,14 +83,12 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "local-test-es"
-              subject: "es-client"
               issuer: "kong-gateway"
-              audience: "upstream-es"
               algorithm: ES256
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://env/LOCAL_TEST_ES_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_ES256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key
   - name: billing-service
     url: http://httpbin.org/anything
     routes:
@@ -103,14 +103,12 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "billing-rs"
-              subject: "billing-rs-client"
               issuer: "kong-gateway-billing"
-              audience: "upstream-billing-rs"
               algorithm: RS256
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://env/BILLING_RS_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_RS256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key
       - name: billing-route-es
         paths:
           - /billing/es
@@ -122,14 +120,12 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "billing-es"
-              subject: "billing-es-client"
               issuer: "kong-gateway-billing"
-              audience: "upstream-billing-es"
               algorithm: ES256
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://env/BILLING_ES_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_ES256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key
   - name: orders-service
     url: http://httpbin.org/anything
     routes:
@@ -144,14 +140,12 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "orders-rs"
-              subject: "orders-rs-client"
               issuer: "kong-gateway-orders"
-              audience: "upstream-orders-rs"
               algorithm: RS256
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://env/ORDERS_RS_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_RS256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key
       - name: orders-route-es
         paths:
           - /orders/es
@@ -163,11 +157,9 @@ services:
               hide_credentials: true
           - name: oauth-client-context
             config:
-              key_id: "orders-es"
-              subject: "orders-es-client"
               issuer: "kong-gateway-orders"
-              audience: "upstream-orders-es"
               algorithm: ES256
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://env/ORDERS_ES_PRIVATE_KEY}"
+              signing_key_vault_reference: "{vault://env/OAUTH_CTX_ES256_SIGNING_KEY}"
+              signing_key_secret_syntax_key: private_key

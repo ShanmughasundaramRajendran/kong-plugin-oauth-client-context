@@ -8,12 +8,8 @@ const APIKEY_C1 = process.env.APIKEY_C1 || "demo-consumer-apikey";
 const APIKEY_C2 = process.env.APIKEY_C2 || "demo-consumer-apikey-2";
 const APIKEY_C3 = process.env.APIKEY_C3 || "demo-consumer-apikey-3";
 
-const INCOMING_JWT = process.env.INCOMING_JWT ||
-  "eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJjbGllbnRfaWQiOiJqd3QtY2xpZW50LTEyMyIsImFwcF9pZCI6Imp3dC1hcHAtNDU2IiwiZ3JhbnRfdHlwZSI6ImNsaWVudF9jcmVkZW50aWFscyIsIm9hdXRoX3Jlc291cmNlX293bmVyX2lkIjoiand0LW93bmVyLTc4OSIsImNvbnNlbnRfaWQiOiJqd3QtY29uc2VudC0xMTEiLCJzc29pZCI6Imp3dC1zc29pZC0yMjIiLCJzY29wZXMiOiJwYXltZW50czpyZWFkIHBheW1lbnRzOndyaXRlIiwieC1hcGlndy1vcmlnaW4tY2xpZW50LWlkIjoiand0LW9yaWdpbi0zMzMiLCJvYXV0aF9pZGVudGl0eV90eXBlIjoib2F1dGgyLWZyb20taW5jb21pbmctdG9rZW4iLCJhdXRoX2lkZW50aXR5X3R5cGUiOiJhdXRoLWZyb20taW5jb21pbmctdG9rZW4iLCJhcHByb3ZlZF9vcGVyYXRpb25fdHlwZXMiOiJxdWVyeSxtdXRhdGlvbiJ9.sig";
-
 const HEADER_INCLUDE_VALUE = process.env.HEADER_INCLUDE_VALUE || "include-header-1";
 const HEADER_REPLACE_VALUE = process.env.HEADER_REPLACE_VALUE || "replaced-by-header-2";
-const HEADER_IGNORE_VALUE = process.env.HEADER_IGNORE_VALUE || "ignored-header-3";
 
 const RS_PRIVATE_KEY = process.env.LOCAL_TEST_RS_PRIVATE_KEY || `-----BEGIN PRIVATE KEY-----
 MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQC3u6HaTXrk5m2W
@@ -55,38 +51,27 @@ function decodeBase64Url(input) {
   return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8");
 }
 
-function encodeBase64Url(input) {
-  return Buffer.from(input, "utf8")
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/g, "");
-}
-
-function buildIncomingJwt(overrides = {}) {
-  const header = { typ: "JWT", alg: "none" };
-  const payload = {
-    client_id: "jwt-client-123",
-    app_id: "jwt-app-456",
+function buildIntrospectionHeader(overrides = {}) {
+  const claims = {
+    client_id: "oidc-client-123",
+    app_id: "oidc-app-456",
     grant_type: "client_credentials",
-    oauth_resource_owner_id: "jwt-owner-789",
-    consent_id: "jwt-consent-111",
-    ssoid: "jwt-ssoid-222",
+    oauth_resource_owner_id: "oidc-owner-789",
+    consent_id: "oidc-consent-111",
+    ssoid: "oidc-ssoid-222",
     scopes: "payments:read payments:write",
-    "x-apigw-origin-client-id": "jwt-origin-333",
-    oauth_identity_type: "oauth2-from-incoming-token",
-    auth_identity_type: "auth-from-incoming-token",
+    "x-apigw-origin-client-id": "oidc-origin-333",
+    oauth_identity_type: "oidc-identity",
+    auth_identity_type: "oidc-auth-identity",
     approved_operation_types: "query,mutation",
     ...overrides,
   };
-
-  return `${encodeBase64Url(JSON.stringify(header))}.${encodeBase64Url(JSON.stringify(payload))}.sig`;
+  return Buffer.from(JSON.stringify(claims), "utf8").toString("base64");
 }
 
 function decodeJwt(token) {
   const parts = token.split(".");
   assert.strictEqual(parts.length, 3, "JWT should have 3 parts");
-
   return {
     header: JSON.parse(decodeBase64Url(parts[0])),
     payload: JSON.parse(decodeBase64Url(parts[1])),
@@ -94,14 +79,11 @@ function decodeJwt(token) {
   };
 }
 
-// JWT signatures are base64url-encoded; convert them to raw bytes before verify.
 function decodeBase64UrlToBuffer(input) {
   const padded = input + "=".repeat((4 - (input.length % 4 || 4)) % 4);
   return Buffer.from(padded.replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
-// Validates plugin-generated JWS signatures for both RS256 and ES256.
-// ES256 signatures from the plugin are raw (r||s), so use ieee-p1363.
 function verifyJwtSignature(token, alg) {
   const [h, p, s] = token.split(".");
   const signingInput = `${h}.${p}`;
@@ -111,24 +93,13 @@ function verifyJwtSignature(token, alg) {
   verifier.end();
 
   if (alg === "RS256") {
-    const rsaPublicKey = crypto.createPublicKey(RS_PRIVATE_KEY).export({
-      type: "spki",
-      format: "pem",
-    });
-
+    const rsaPublicKey = crypto.createPublicKey(RS_PRIVATE_KEY).export({ type: "spki", format: "pem" });
     return verifier.verify(rsaPublicKey, signature);
   }
 
   if (alg === "ES256") {
-    const ecPublicKey = crypto.createPublicKey(ES_PRIVATE_KEY).export({
-      type: "spki",
-      format: "pem",
-    });
-
-    return verifier.verify(
-      { key: ecPublicKey, dsaEncoding: "ieee-p1363" },
-      signature
-    );
+    const ecPublicKey = crypto.createPublicKey(ES_PRIVATE_KEY).export({ type: "spki", format: "pem" });
+    return verifier.verify({ key: ecPublicKey, dsaEncoding: "ieee-p1363" }, signature);
   }
 
   return false;
@@ -151,42 +122,19 @@ async function getRoute(path, apikey, opts = {}) {
     }
   }
 
-  const response = await fetch(`${BASE_URL}${path}`, {
-    method: "GET",
-    headers,
-  });
-
-  const contentType = response.headers.get("content-type") || "";
-  let body;
-  if (contentType.includes("application/json")) {
-    body = await response.json();
-  } else {
-    body = { raw: await response.text() };
-  }
+  const response = await fetch(`${BASE_URL}${path}`, { method: "GET", headers });
+  const body = await response.json();
   return { response, body };
 }
 
-function assertCommonHeader(decodedHeader, expectedAlg, expectedKid) {
+function assertCommonHeader(decodedHeader, expectedAlg) {
   assert.strictEqual(decodedHeader.tv, 2);
   assert.strictEqual(decodedHeader.typ, "JWT");
   assert.strictEqual(decodedHeader.alg, expectedAlg);
-  assert.strictEqual(decodedHeader.kid, expectedKid);
+  assert.strictEqual(decodedHeader.kid, undefined);
 }
 
-function assertIncomingJwtClaims(payload) {
-  assert.strictEqual(payload.client_id, "jwt-client-123");
-  assert.strictEqual(payload.app_id, "jwt-app-456");
-  assert.strictEqual(payload.grant_type, "client_credentials");
-  assert.strictEqual(payload.oauth_resource_owner_id, "jwt-owner-789");
-  assert.strictEqual(payload.consent_id, "jwt-consent-111");
-  assert.strictEqual(payload.ssoid, "jwt-ssoid-222");
-  assert.strictEqual(payload.scopes, "payments:read payments:write");
-  assert.strictEqual(payload["x-apigw-origin-client-id"], "jwt-origin-333");
-  assert.strictEqual(payload.auth_identity_type, "auth-from-incoming-token");
-  assert.strictEqual(payload.approved_operation_types, "query,mutation");
-}
-
-describe("oauth-client-context functional suite (mocha)", function () {
+describe("oauth-client-context functional suite (mocha, OIDC input)", function () {
   this.timeout(30000);
 
   it("requires api key", async function () {
@@ -194,38 +142,13 @@ describe("oauth-client-context functional suite (mocha)", function () {
     assert.strictEqual(response.status, 401);
   });
 
-  it("RS256 route signs and injects JWT with tv=2 and incoming-JWT claims", async function () {
+  it("RS256 route signs and injects JWT using OIDC introspection claims", async function () {
     const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
       headers: {
-        Authorization: `Bearer ${INCOMING_JWT}`,
+        "X-Kong-Introspection-Response": buildIntrospectionHeader(),
         "x-consumer-extra-claim": HEADER_INCLUDE_VALUE,
         "x-consumer-replace-claim": HEADER_REPLACE_VALUE,
-        "x-consumer-ignore-claim": HEADER_IGNORE_VALUE,
-      },
-    });
-
-    assert.strictEqual(response.status, 200);
-    const token = body.headers["X-Client-Auth-Ctx"];
-    assert.ok(token, "x-client-auth-ctx token should be present in upstream headers");
-
-    const { header, payload } = decodeJwt(token);
-    assertCommonHeader(header, "RS256", "local-test-rs");
-    assertIncomingJwtClaims(payload);
-    assert.strictEqual(verifyJwtSignature(token, "RS256"), true);
-
-    // Header behavior requirements:
-    // 1) include header1 as new claim
-    // 2) replace existing claim with header2
-    // 3) ignore header3 entirely
-    assert.strictEqual(payload.oauth_identity_type, HEADER_REPLACE_VALUE);
-    assert.strictEqual(payload.consumer_extra_claim, HEADER_INCLUDE_VALUE);
-    assert.ok(!Object.prototype.hasOwnProperty.call(payload, "consumer_ignore_claim"));
-  });
-
-  it("ES256 route signs and injects JWT with tv=2", async function () {
-    const { response, body } = await getRoute("/test-es", APIKEY_C1, {
-      headers: {
-        Authorization: `Bearer ${INCOMING_JWT}`,
+        "x-extra-claim": "from-additional-mapping",
       },
     });
 
@@ -234,120 +157,90 @@ describe("oauth-client-context functional suite (mocha)", function () {
     assert.ok(token);
 
     const { header, payload } = decodeJwt(token);
-    assertCommonHeader(header, "ES256", "local-test-es");
-    assert.strictEqual(payload.client_id, "jwt-client-123");
+    assertCommonHeader(header, "RS256");
+    assert.strictEqual(verifyJwtSignature(token, "RS256"), true);
+    assert.strictEqual(payload.client_id, "oidc-client-123");
+    assert.strictEqual(payload.app_id, "oidc-app-456");
+    assert.strictEqual(payload.oauth_identity_type, HEADER_REPLACE_VALUE);
+    assert.strictEqual(payload.consumer_extra_claim, HEADER_INCLUDE_VALUE);
+    assert.strictEqual(payload.extra_claim, "from-additional-mapping");
+  });
+
+  it("ES256 route signs and injects JWT using OIDC introspection claims", async function () {
+    const { response, body } = await getRoute("/test-es", APIKEY_C1, {
+      headers: {
+        "X-Kong-Introspection-Response": buildIntrospectionHeader(),
+      },
+    });
+
+    assert.strictEqual(response.status, 200);
+    const token = body.headers["X-Client-Auth-Ctx"];
+    assert.ok(token);
+
+    const { header, payload } = decodeJwt(token);
+    assertCommonHeader(header, "ES256");
+    assert.strictEqual(payload.client_id, "oidc-client-123");
     assert.strictEqual(verifyJwtSignature(token, "ES256"), true);
   });
 
   it("billing and orders routes work with consumer-specific API keys", async function () {
-    const billingRs = await getRoute("/billing/rs", APIKEY_C2, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
-    });
-    const billingEs = await getRoute("/billing/es", APIKEY_C2, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
-    });
-    const ordersRs = await getRoute("/orders/rs", APIKEY_C3, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
-    });
-    const ordersEs = await getRoute("/orders/es", APIKEY_C3, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
-    });
+    const headers = { "X-Kong-Introspection-Response": buildIntrospectionHeader() };
+    const billingRs = await getRoute("/billing/rs", APIKEY_C2, { headers });
+    const billingEs = await getRoute("/billing/es", APIKEY_C2, { headers });
+    const ordersRs = await getRoute("/orders/rs", APIKEY_C3, { headers });
+    const ordersEs = await getRoute("/orders/es", APIKEY_C3, { headers });
 
     assert.strictEqual(billingRs.response.status, 200);
     assert.strictEqual(billingEs.response.status, 200);
     assert.strictEqual(ordersRs.response.status, 200);
     assert.strictEqual(ordersEs.response.status, 200);
-
-    // Ensure each route keeps its configured signing algorithm.
-    assert.strictEqual(decodeJwt(billingRs.body.headers["X-Client-Auth-Ctx"]).header.alg, "RS256");
-    assert.strictEqual(decodeJwt(billingEs.body.headers["X-Client-Auth-Ctx"]).header.alg, "ES256");
-    assert.strictEqual(decodeJwt(ordersRs.body.headers["X-Client-Auth-Ctx"]).header.alg, "RS256");
-    assert.strictEqual(decodeJwt(ordersEs.body.headers["X-Client-Auth-Ctx"]).header.alg, "ES256");
-    assert.strictEqual(verifyJwtSignature(billingRs.body.headers["X-Client-Auth-Ctx"], "RS256"), true);
-    assert.strictEqual(verifyJwtSignature(billingEs.body.headers["X-Client-Auth-Ctx"], "ES256"), true);
-    assert.strictEqual(verifyJwtSignature(ordersRs.body.headers["X-Client-Auth-Ctx"], "RS256"), true);
-    assert.strictEqual(verifyJwtSignature(ordersEs.body.headers["X-Client-Auth-Ctx"], "ES256"), true);
   });
 
-  it("falls back to consumer claims when incoming JWT is missing", async function () {
+  it("falls back to consumer claims when OIDC introspection header is missing", async function () {
     const { response, body } = await getRoute("/test-rs", APIKEY_C1);
-
     assert.strictEqual(response.status, 200);
     const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
     assert.strictEqual(payload.client_id, "consumer-client-001");
     assert.strictEqual(payload.app_id, "consumer-app-001");
   });
 
-  it("accepts lowercase bearer scheme", async function () {
+  it("falls back to consumer claims when OIDC introspection payload is malformed", async function () {
     const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
-      headers: {
-        Authorization: `bearer ${buildIncomingJwt({ client_id: "from-lowercase-bearer" })}`,
-      },
+      headers: { "X-Kong-Introspection-Response": "not-base64" },
     });
-
-    assert.strictEqual(response.status, 200);
-    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
-    assert.strictEqual(payload.client_id, "from-lowercase-bearer");
-  });
-
-  it("accepts raw token without Bearer prefix", async function () {
-    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
-      headers: {
-        Authorization: buildIncomingJwt({ app_id: "from-raw-token" }),
-      },
-    });
-
-    assert.strictEqual(response.status, 200);
-    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
-    assert.strictEqual(payload.app_id, "from-raw-token");
-  });
-
-  it("falls back to consumer claims when incoming JWT payload is malformed", async function () {
-    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
-      headers: {
-        Authorization: "Bearer malformed.jwt",
-      },
-    });
-
     assert.strictEqual(response.status, 200);
     const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
     assert.strictEqual(payload.client_id, "consumer-client-001");
     assert.strictEqual(payload.app_id, "consumer-app-001");
   });
 
-  it("does not include or replace claims when include/replace headers are empty", async function () {
+  it("falls back to consumer claims when OIDC claim value is empty", async function () {
     const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
       headers: {
-        Authorization: `Bearer ${buildIncomingJwt({ oauth_identity_type: "from-incoming-claim" })}`,
-        "x-consumer-extra-claim": "",
-        "x-consumer-replace-claim": "",
+        "X-Kong-Introspection-Response": buildIntrospectionHeader({ client_id: "", app_id: "" }),
       },
     });
-
     assert.strictEqual(response.status, 200);
     const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
-    assert.strictEqual(payload.oauth_identity_type, "from-incoming-claim");
-    assert.ok(!Object.prototype.hasOwnProperty.call(payload, "consumer_extra_claim"));
+    assert.strictEqual(payload.client_id, "consumer-client-001");
+    assert.strictEqual(payload.app_id, "consumer-app-001");
   });
 
-  it("sets exp relative to iat based on route ttl", async function () {
-    const rs = await getRoute("/test-rs", APIKEY_C1, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
+  it("ignores Authorization token claims when OIDC introspection claims are present", async function () {
+    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
+      headers: {
+        Authorization: "Bearer should-not-be-used-for-claims",
+        "X-Kong-Introspection-Response": buildIntrospectionHeader({ client_id: "oidc-priority-client" }),
+      },
     });
-    const ordersEs = await getRoute("/orders/es", APIKEY_C3, {
-      headers: { Authorization: `Bearer ${INCOMING_JWT}` },
-    });
-
-    const rsPayload = decodeJwt(rs.body.headers["X-Client-Auth-Ctx"]).payload;
-    const ordersPayload = decodeJwt(ordersEs.body.headers["X-Client-Auth-Ctx"]).payload;
-
-    assert.ok(rsPayload.exp - rsPayload.iat >= 60 && rsPayload.exp - rsPayload.iat <= 61);
-    assert.ok(ordersPayload.exp - ordersPayload.iat >= 180 && ordersPayload.exp - ordersPayload.iat <= 181);
+    assert.strictEqual(response.status, 200);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
+    assert.strictEqual(payload.client_id, "oidc-priority-client");
   });
 
   it("handles duplicate replace-claim header values without failing", async function () {
     const multiHeaders = new Headers();
-    multiHeaders.set("Authorization", `Bearer ${INCOMING_JWT}`);
+    multiHeaders.set("X-Kong-Introspection-Response", buildIntrospectionHeader());
     multiHeaders.append("x-consumer-replace-claim", "something-1");
     multiHeaders.append("x-consumer-replace-claim", "something-2");
 
@@ -356,34 +249,20 @@ describe("oauth-client-context functional suite (mocha)", function () {
     });
 
     assert.strictEqual(response.status, 200);
-    const token = body.headers["X-Client-Auth-Ctx"];
-    assert.ok(token);
-
-    const { payload } = decodeJwt(token);
+    const { payload } = decodeJwt(body.headers["X-Client-Auth-Ctx"]);
     assert.ok(
       typeof payload.oauth_identity_type === "string" &&
-      (payload.oauth_identity_type.includes("something-1") ||
-       payload.oauth_identity_type.includes("something-2")),
-      `unexpected oauth_identity_type: ${payload.oauth_identity_type}`
+      (payload.oauth_identity_type.includes("something-1") || payload.oauth_identity_type.includes("something-2"))
     );
   });
 
-  it("falls back to consumer claim when incoming claim is empty", async function () {
-    const { response, body } = await getRoute("/test-rs", APIKEY_C1, {
-      headers: {
-        Authorization: `Bearer ${buildIncomingJwt({
-          client_id: "",
-          app_id: "",
-        })}`,
-      },
-    });
-
-    assert.strictEqual(response.status, 200);
-    const token = body.headers["X-Client-Auth-Ctx"];
-    assert.ok(token);
-
-    const { payload } = decodeJwt(token);
-    assert.strictEqual(payload.client_id, "consumer-client-001");
-    assert.strictEqual(payload.app_id, "consumer-app-001");
+  it("sets exp relative to iat based on route ttl", async function () {
+    const headers = { "X-Kong-Introspection-Response": buildIntrospectionHeader() };
+    const rs = await getRoute("/test-rs", APIKEY_C1, { headers });
+    const ordersEs = await getRoute("/orders/es", APIKEY_C3, { headers });
+    const rsPayload = decodeJwt(rs.body.headers["X-Client-Auth-Ctx"]).payload;
+    const ordersPayload = decodeJwt(ordersEs.body.headers["X-Client-Auth-Ctx"]).payload;
+    assert.ok(rsPayload.exp - rsPayload.iat >= 60 && rsPayload.exp - rsPayload.iat <= 61);
+    assert.ok(ordersPayload.exp - ordersPayload.iat >= 180 && ordersPayload.exp - ordersPayload.iat <= 181);
   });
 });

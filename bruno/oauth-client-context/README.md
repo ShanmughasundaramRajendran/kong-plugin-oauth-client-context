@@ -14,6 +14,7 @@ This collection is aligned with current `oauth-client-context` handler behavior.
   - `07-rs256-lowercase-bearer.bru` (accepts lowercase `bearer`)
   - `08-rs256-raw-token.bru` (accepts raw token without `Bearer`)
   - `09-rs256-empty-claims-fallback.bru` (empty incoming claims fall back to consumer tags)
+  - `10-rs256-oidc-introspection-precedence.bru` (OIDC introspection claims override incoming JWT claims)
 - Admin check:
   - `03-admin-enabled-plugins.bru`
 
@@ -34,3 +35,4 @@ This collection is aligned with current `oauth-client-context` handler behavior.
 Use `environments/local.bru`:
 - `incoming_jwt_token` for regular claims propagation checks
 - `incoming_jwt_token_empty_claims` for fallback validation
+- `oidc_introspection_response_b64` for OIDC precedence validation

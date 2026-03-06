@@ -138,10 +138,10 @@ test-orders-es256:
 
 ## test-dynamic-claims: Validate claims are dynamically resolved from each authenticated consumer
 test-dynamic-claims:
-	@token=$$(curl -s -H "apikey: demo-consumer-apikey" -H "Authorization: Bearer $(INCOMING_TEST_JWT)" -H "x-consumer-extra-claim: include-header-1" -H "x-consumer-replace-claim: replaced-by-header-2" -H "x-consumer-ignore-claim: ignored-header-3" http://localhost:8000/test-rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
+	@token=$$(curl -s -H "apikey: demo-consumer-apikey" -H "X-Kong-Introspection-Response: eyJjbGllbnRfaWQiOiJvaWRjLWNsaWVudC14MSIsImFwcF9pZCI6Im9pZGMtYXBwLXgxIn0=" -H "x-consumer-extra-claim: include-header-1" -H "x-consumer-replace-claim: replaced-by-header-2" -H "x-extra-claim: dynamic-extra-value" -H "x-consumer-ignore-claim: ignored-header-3" http://localhost:8000/test-rs | jq -r '.headers["X-Client-Auth-Ctx"]'); \
 	payload=$$(echo "$$token" | cut -d "." -f2 | tr "_-" "/+" | awk '{l=length($$0)%4; if(l==2) print $$0 "=="; else if(l==3) print $$0 "="; else print $$0}' | openssl enc -base64 -d -A 2>/dev/null); \
-	echo "$$payload" | jq -e '.client_id == "jwt-client-123" and .app_id == "jwt-app-456" and .oauth_identity_type == "replaced-by-header-2" and .consumer_extra_claim == "include-header-1" and (has("consumer_ignore_claim") | not)' >/dev/null
-	@echo "Functional JWT extraction + include/replace/ignore header scenarios passed"
+	echo "$$payload" | jq -e '.client_id == "oidc-client-x1" and .app_id == "oidc-app-x1" and .oauth_identity_type == "replaced-by-header-2" and .consumer_extra_claim == "include-header-1" and .extra_claim == "dynamic-extra-value" and (has("consumer_ignore_claim") | not)' >/dev/null
+	@echo "Functional OIDC extraction + include/replace/ignore/additional header scenarios passed"
 
 ## test-mocha: Run mocha functional suite against running local Kong
 test-mocha:

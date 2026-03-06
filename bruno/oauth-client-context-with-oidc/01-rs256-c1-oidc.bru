@@ -1,0 +1,20 @@
+meta {
+  name: RS256 C1 OIDC
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{base_url}}/test-rs
+  body: none
+  auth: none
+}
+
+headers {
+  Accept: application/json
+  apikey: {{apikey_c1}}
+  X-Kong-Introspection-Response: {{oidc_introspection_response_b64}}
+  x-consumer-extra-claim: {{header_include}}
+  x-consumer-replace-claim: {{header_replace}}
+  x-consumer-ignore-claim: {{header_ignore}}
+}
