@@ -390,7 +390,6 @@ function OAuthClientContext:access(conf)
   end
 
   kong.service.request.set_header(conf.header_name, token)
-  kong.response.set_header(conf.header_name, token)
 
 end
 
