@@ -64,15 +64,14 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway"
-              algorithm: RS256
+              signing_algorithm: RS256
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://aws/oauth-client-context/test-rs/private_key}"
+              signing_private_key: "{vault://env/OAUTH_CTX_RS256_SIGNING_KEY}"
               additional_headers:
                 - header_name: x-extra-claim
                   claim_name: extra_claim
-                  mode: add
       - name: test-route-es
         paths:
           - /test-es
@@ -86,11 +85,11 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway"
-              algorithm: ES256
+              signing_algorithm: ES256
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 60
-              private_key: "{vault://aws/oauth-client-context/test-es/private_key}"
+              signing_private_key: "{vault://env/OAUTH_CTX_ES256_SIGNING_KEY}"
   - name: billing-service
     url: http://httpbin.org/anything
     routes:
@@ -107,11 +106,11 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway-billing"
-              algorithm: RS256
+              signing_algorithm: RS256
               approved_operation_types: mutation
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://aws/oauth-client-context/billing-rs/private_key}"
+              signing_private_key: "{vault://env/BILLING_RS_PRIVATE_KEY}"
       - name: billing-route-es
         paths:
           - /billing/es
@@ -125,11 +124,11 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway-billing"
-              algorithm: ES256
+              signing_algorithm: ES256
               approved_operation_types: subscription
               header_name: x-client-auth-ctx
               ttl: 120
-              private_key: "{vault://aws/oauth-client-context/billing-es/private_key}"
+              signing_private_key: "{vault://env/BILLING_ES_PRIVATE_KEY}"
   - name: orders-service
     url: http://httpbin.org/anything
     routes:
@@ -146,11 +145,11 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway-orders"
-              algorithm: RS256
+              signing_algorithm: RS256
               approved_operation_types: query
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://aws/oauth-client-context/orders-rs/private_key}"
+              signing_private_key: "{vault://env/ORDERS_RS_PRIVATE_KEY}"
       - name: orders-route-es
         paths:
           - /orders/es
@@ -164,8 +163,8 @@ services:
             config:
               propagate_client_auth_context: true
               issuer: "kong-gateway-orders"
-              algorithm: ES256
+              signing_algorithm: ES256
               approved_operation_types: subscription
               header_name: x-client-auth-ctx
               ttl: 180
-              private_key: "{vault://aws/oauth-client-context/orders-es/private_key}"
+              signing_private_key: "{vault://env/ORDERS_ES_PRIVATE_KEY}"

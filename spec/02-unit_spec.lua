@@ -222,9 +222,9 @@ describe("oauth-client-context handler (02 unit)", function()
   local function default_conf(overrides)
     local conf = {
       propagate_client_auth_context = true,
-      private_key = "{vault://env/UNIT_PRIVATE_KEY}",
+      signing_private_key = "{vault://env/UNIT_PRIVATE_KEY}",
       issuer = "unit-issuer",
-      algorithm = "RS256",
+      signing_algorithm = "RS256",
       header_name = "x-client-auth-ctx",
       ttl = 60,
       additional_headers = {},
@@ -253,10 +253,10 @@ describe("oauth-client-context handler (02 unit)", function()
     assert.is_nil(state.response_exit)
   end)
 
-  it("returns 500 when private_key is missing", function()
+  it("returns 500 when signing_private_key is missing", function()
     local handler, state = load_handler()
     local conf = default_conf()
-    conf.private_key = nil
+    conf.signing_private_key = nil
     handler:access(conf)
     assert.are.equal(500, state.response_exit.code)
     assert.are.equal("Invalid plugin configuration", state.response_exit.body.message)
@@ -290,7 +290,7 @@ describe("oauth-client-context handler (02 unit)", function()
     assert.are.equal("JWT signing failed", state.response_exit.body.message)
   end)
 
-  it("uses OIDC claims first, then consumer fallback, plus static/additional headers and config operation types", function()
+  it("uses OIDC claims first, then consumer fallback, plus additional headers and config operation types", function()
     local handler, state = load_handler({
       request_headers = {
         ["X-Kong-Introspection-Response"] = build_oidc_introspection_payload({
@@ -301,6 +301,7 @@ describe("oauth-client-context handler (02 unit)", function()
         ["x-consumer-extra-claim"] = "include-me",
         ["x-consumer-replace-claim"] = "replace-me",
         ["x-custom-add"] = "custom-add-value",
+        ["x-oauth-override"] = "override-from-additional-header",
       },
       consumer = {
         custom_id = "consumer-custom-id",
@@ -313,32 +314,35 @@ describe("oauth-client-context handler (02 unit)", function()
       now = 1700000200,
       vault = {
         get = function(ref)
-          assert.are.equal("{vault://env/UNIT_PRIVATE_KEY}", ref)
-          return "resolved-private-key"
+          if ref == "{vault://env/UNIT_PRIVATE_KEY}" then
+            return "resolved-private-key"
+          end
+          if ref == "{vault://env/UNIT_KEY_ID}" then
+            return "unit-kid-1"
+          end
+          assert.fail("unexpected vault reference: " .. tostring(ref))
         end,
       },
     })
 
     handler:access(default_conf({
       approved_operation_types = "query",
+      signing_key_id = "{vault://env/UNIT_KEY_ID}",
       additional_headers = {
-        { header_name = "x-custom-add", claim_name = "custom_add_claim", mode = "add" },
-      },
-      add_headers = {
-        ["x-config-header-claim"] = "configured-default",
+        { header_name = "x-custom-add", claim_name = "custom_add_claim" },
+        { header_name = "x-oauth-override", claim_name = "oauth_identity_type" },
       },
     }))
 
     local header, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])
     assert.are.equal("RS256", header.alg)
-    assert.is_nil(header.kid)
+    assert.are.equal("unit-kid-1", header.kid)
     assert.are.equal("oidc-client", payload.client_id)
     assert.are.equal("oidc-app-456", payload.app_id)
-    assert.are.equal("replace-me", payload.oauth_identity_type)
+    assert.are.equal("override-from-additional-header", payload.oauth_identity_type)
     assert.are.equal("include-me", payload.consumer_extra_claim)
     assert.are.equal("custom-add-value", payload.custom_add_claim)
     assert.are.equal("query", payload.approved_operation_types)
-    assert.are.equal("configured-default", payload["x-config-header-claim"])
     assert.are.equal(1700000200, payload.iat)
     assert.are.equal(1700000260, payload.exp)
     assert.are.equal("unit-issuer", payload.iss)
@@ -403,7 +407,7 @@ describe("oauth-client-context handler (02 unit)", function()
     })
 
     handler:access(default_conf({
-      algorithm = "ES256",
+      signing_algorithm = "ES256",
     }))
 
     local _, payload = decode_jwt(state.service_headers["x-client-auth-ctx"])

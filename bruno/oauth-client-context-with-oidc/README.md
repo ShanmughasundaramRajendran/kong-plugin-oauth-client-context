@@ -2,6 +2,11 @@
 
 Collection name: `oauth-client-context-with OIDC`
 
+## Plugin Config Names
+- `signing_private_key` replaces `private_key`.
+- `signing_algorithm` replaces `algorithm`.
+- `signing_key_id` is optional and maps to JWT header `kid` when configured.
+
 This collection validates OIDC introspection-header-driven claim sourcing.
 
 ## Behavior Validated

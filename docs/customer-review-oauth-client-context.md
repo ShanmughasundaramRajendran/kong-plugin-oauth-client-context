@@ -35,8 +35,8 @@ Overall impact: lower operational complexity, clearer ownership boundaries, safe
 - Current:
   - Clean Kong schema with explicit plugin config:
     - `propagate_client_auth_context`
-    - `private_key` (referenceable)
-    - `algorithm`, `header_name`, `ttl`, `approved_operation_types`, `add_headers`, `additional_headers`
+    - `signing_private_key` (referenceable)
+    - `signing_algorithm`, `header_name`, `ttl`, `approved_operation_types`, `additional_headers`
   - Removes legacy nested config model from runtime path
 - Best practice:
   - Minimize nested config complexity; keep security-critical inputs explicit and required
@@ -47,9 +47,9 @@ Overall impact: lower operational complexity, clearer ownership boundaries, safe
 - Legacy:
   - Keystore-driven retrieval logic with lockbox formatting controls and secret-syntax coupling
 - Current:
-  - `private_key` supports Kong vault references directly (referenceable config field)
+  - `signing_private_key` supports Kong vault references directly (referenceable config field)
   - Runtime resolves vault references with `kong.vault.get`
-  - Handles common secret shapes (raw string, JSON/table with `private_key`)
+  - Handles common secret shapes (raw string, JSON/table with `signing_private_key`)
 - Best practice:
   - Keep secret retrieval delegated to gateway vault subsystem; avoid custom secret-store coupling in plugin logic
 - Impact:
@@ -115,7 +115,7 @@ Overall impact: lower operational complexity, clearer ownership boundaries, safe
 
 ## Recommendations Going Forward
 - Production:
-  - Use vault references for `private_key` (AWS secrets manager via Kong vault provider)
+  - Use vault references for `signing_private_key` (AWS secrets manager via Kong vault provider)
   - Keep `propagate_client_auth_context` explicit per route/service scope
   - Keep `approved_operation_types` managed by config/policy, not caller input
 - Operations:
@@ -124,4 +124,3 @@ Overall impact: lower operational complexity, clearer ownership boundaries, safe
 - Governance:
   - Treat additional claim mappings as controlled config changes with peer review
   - Avoid expanding dynamic claims without explicit data ownership and validation
-

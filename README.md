@@ -18,24 +18,23 @@ This POC supports both signing algorithms required by the customer:
 
 ## Configuration
 - `propagate_client_auth_context` (optional): additional enable flag (default `false`).
-- `private_key` (required, referenceable): signing key reference/value (vault reference recommended, example: `{vault://aws/oauth-client-context/test-rs/private_key}`).
+- `signing_private_key` (required, referenceable): signing key reference/value (vault reference recommended, example: `{vault://aws/oauth-client-context/test-rs/SIGNING_PRIVATE_KEY}`).
+- `signing_key_id` (optional, referenceable): JWT key id (`kid`) value (example: `{vault://aws/cfo/....../KEY_ID}`).
 - `approved_operation_types` (optional): GraphQL operation type to embed into JWT (`query`, `mutation`, `subscription`).
-- `add_headers` (optional): key/value map of additional headers to embed; request header value is preferred over configured default.
 - `additional_headers` (optional): array of request-header to JWT-claim mappings:
   - `header_name`
   - `claim_name`
-  - `mode` (`add` only, default `add`)
 - `issuer` (optional): JWT `iss` claim. Defaults to incoming request host.
-- `algorithm` (optional): `RS256` or `ES256` (default `RS256`).
+- `signing_algorithm` (optional): `RS256` or `ES256` (default `RS256`).
 - `header_name` (optional): defaults to `x-client-auth-ctx`.
 - `ttl` (optional): defaults to `60`, valid range `1..86400`.
 
 ## Signing Key Resolution
-- The plugin resolves signing key using `algorithm` + `private_key`.
-- `private_key` should point to Kong AWS vault references for production usage.
-- Recommended pattern: `{vault://aws/<secret-id>/<json-key>}` where `<json-key>` is typically `private_key`.
+- The plugin resolves signing key using `signing_algorithm` + `signing_private_key`.
+- `signing_private_key` should point to Kong AWS vault references for production usage.
+- Recommended pattern: `{vault://aws/<secret-id>/<json-key>}` where `<json-key>` is typically `SIGNING_PRIVATE_KEY`.
 - Kong resolves the vault reference before plugin execution.
-- Parsed signing keys are cached in-plugin by `algorithm:key_reference` for 10 minutes (`600` seconds).
+- Parsed signing keys are cached in-plugin by `signing_algorithm:key_reference` for 10 minutes (`600` seconds).
 - Generated JWT header includes static `tv: 2`.
 - Local compose enables `aws` vault backend. Configure:
   - `KONG_AWS_REGION`
@@ -141,7 +140,7 @@ Pass criteria: all schema, unit, and integration specs pass with `0 failures`.
 
 5. Confirm both customer-required algorithms are configured in declarative config.
 ```bash
-rg -n "algorithm: RS256|algorithm: ES256" config/kong.yml
+rg -n "signing_algorithm: RS256|signing_algorithm: ES256" config/kong.yml
 ```
 Pass criteria: both lines are present in `config/kong.yml`.
 

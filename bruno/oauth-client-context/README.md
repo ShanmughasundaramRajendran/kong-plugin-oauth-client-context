@@ -2,6 +2,11 @@
 
 This collection is aligned with current `oauth-client-context` handler behavior.
 
+## Plugin Config Names
+- `signing_private_key` replaces `private_key`.
+- `signing_algorithm` replaces `algorithm`.
+- `signing_key_id` is optional and maps to JWT header `kid` when configured.
+
 ## Requests Included
 - Core route checks:
   - `01-rs256-smoke.bru`
@@ -25,7 +30,7 @@ This collection is aligned with current `oauth-client-context` handler behavior.
 - When multi-value headers occur, plugin logic takes the first value.
 
 ## Expected JWT Shape
-- Header includes: `tv`, `typ`, `alg`, `kid`
+- Header includes: `tv`, `typ`, `alg`, and optional `kid` (when `signing_key_id` is configured)
 - Payload includes dynamic claim resolution:
   1. incoming JWT claims
   2. consumer `claim:*` tags fallback

@@ -28,25 +28,24 @@ return {
               one_of = { "query", "mutation", "subscription" },
             }
           },
-          { add_headers = {
-              type = "map",
-              required = false,
-              default = {},
-              keys = { type = "string", len_min = 1, len_max = 200 },
-              values = { type = "string", len_min = 1, len_max = 1000 },
-            }
-          },
           -- Vault reference or direct private key value used to sign JWT.
-          -- Example: {vault://aws/cfo/....../private_key}
-          { private_key = {
+          -- Example: {vault://aws/cfo/....../SIGNING_PRIVATE_KEY}
+          { signing_private_key = {
               type = "string",
               referenceable = true,
               required = true,
               description = "Private key reference/value for JWT signing (RS256/ES256).",
             }
           },
+          -- Optional JWT kid value.
+          -- Example: {vault://aws/cfo/....../KEY_ID}
+          { signing_key_id = {
+              type = "string",
+              referenceable = true,
+              required = false,
+            }
+          },
           -- Additional request headers to embed as JWT claims.
-          -- "add": set only when target claim is empty.
           { additional_headers = {
               type = "array",
               required = false,
@@ -56,13 +55,12 @@ return {
                 fields = {
                   { header_name = { type = "string", required = true } },
                   { claim_name = { type = "string", required = true } },
-                  { mode = { type = "string", required = false, default = "add", one_of = { "add" } } },
                 },
               },
             }
           },
           { issuer = { type = "string", required = false } },
-          { algorithm = { 
+          { signing_algorithm = { 
               type = "string", 
               default = "RS256",
               one_of = { "RS256", "ES256" }

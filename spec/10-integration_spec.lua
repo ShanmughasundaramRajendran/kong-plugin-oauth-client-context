@@ -41,9 +41,9 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
       route = { id = rs_route.id },
       config = {
         propagate_client_auth_context = true,
-        private_key = rsa_private_key,
+        signing_private_key = rsa_private_key,
         issuer = "kong-gateway",
-        algorithm = "RS256",
+        signing_algorithm = "RS256",
         approved_operation_types = "query",
         header_name = "x-client-auth-ctx",
       }
@@ -54,9 +54,9 @@ describe("oauth-client-context plugin (10 integration, OIDC input)", function()
       route = { id = es_route.id },
       config = {
         propagate_client_auth_context = true,
-        private_key = ec_private_key,
+        signing_private_key = ec_private_key,
         issuer = "kong-gateway",
-        algorithm = "ES256",
+        signing_algorithm = "ES256",
         approved_operation_types = "subscription",
         header_name = "x-client-auth-ctx",
       }
